@@ -7,6 +7,7 @@
 package sfuclient
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/pion/dtls/v3"
@@ -43,20 +44,33 @@ type Options struct {
 	// Publish and Subscribe are interceptors put on each connection ahead
 	// of the session's own, nearest the network: the uplink limit and
 	// congestion control on the one we publish on, the network simulation
-	// on the one we receive on.
+	// on the one we receive on. A session makes its publish connection
+	// once, inside Join, and the Publish factories go on that connection
+	// alone: a cc.InterceptorFactory made for the session hands its
+	// OnNewPeerConnection the publish connection's estimator, once, before
+	// Join returns.
 	Publish   []interceptor.Factory
 	Subscribe []interceptor.Factory
 	// Loopback offers 127.0.0.1 as a candidate (tests).
 	Loopback bool
+	// SendOnly subscribes to nothing (bots that only publish); the server
+	// still says who's there and what they publish.
+	SendOnly bool
+	// Log takes the session's lines (sfuclient: …); nil is slog.Default().
+	Log *slog.Logger
 }
 
 // NewAPI makes the pion API for one of a session's connections (the session
 // uses it; so do tests that drive pion directly). Publish: the caller's
-// interceptors, then pion's NACK responder and sender reports (registered
-// after the caller's, so they see packets as they're written, before any
-// pacing: the reports map RTP time to the capture clock). Receive: the
-// caller's, then pion's NACK generator, receiver reports, and TWCC feedback
-// for the SFU's congestion control.
+// interceptors, then transport-wide sequence numbers (congestion control
+// among the caller's reads them, and the SFU's TWCC feedback answers
+// them), then pion's NACK responder outside them (so a resend gets a
+// number of its own) and sender reports (outermost, so they see packets as
+// they're written, before any pacing: the reports map RTP time to the
+// capture clock). A caller passes congestion control and its pacer, never
+// the transport-wide numbers again. Receive: the caller's, then pion's NACK
+// generator, receiver reports, and TWCC feedback for the SFU's congestion
+// control.
 func NewAPI(o Options, publish bool) (*webrtc.API, error) {
 	m := &webrtc.MediaEngine{}
 	if err := codecs.Register(m); err != nil {
@@ -67,6 +81,10 @@ func NewAPI(o Options, publish bool) (*webrtc.API, error) {
 		for _, f := range o.Publish {
 			ir.Add(f)
 		}
+		seq, err := twcc.NewHeaderExtensionInterceptor()
+		if err != nil {
+			return nil, err
+		}
 		resp, err := nack.NewResponderInterceptor(nack.ResponderSize(nackKept))
 		if err != nil {
 			return nil, err
@@ -75,6 +93,7 @@ func NewAPI(o Options, publish bool) (*webrtc.API, error) {
 		if err != nil {
 			return nil, err
 		}
+		ir.Add(seq)
 		ir.Add(resp)
 		ir.Add(sr)
 	} else {

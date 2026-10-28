@@ -48,9 +48,10 @@ type peer struct {
 	pending []webrtc.ICECandidateInit
 
 	mu       sync.Mutex
-	offering bool        // Pub: an offer is out and its answer isn't in
-	again    bool        // Pub: something changed since; offer after the answer
-	timer    *time.Timer // Pub: the batching window
+	state    webrtc.PeerConnectionState // as last told
+	offering bool                       // Pub: an offer is out and its answer isn't in
+	again    bool                       // Pub: something changed since; offer after the answer
+	timer    *time.Timer                // Pub: the batching window
 	closed   bool
 }
 
@@ -67,18 +68,33 @@ func newPeer(s *Session, name signal.PC, api *webrtc.API) (*peer, error) {
 		j := c.ToJSON()
 		s.send(signal.KindICE, signal.ICE{PC: name, Candidate: j.Candidate, SDPMid: j.SDPMid, SDPMLineIndex: j.SDPMLineIndex, UsernameFragment: j.UsernameFragment})
 	})
-	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
-		s.log.Debug("sfuclient: connection", "pc", name, "state", st.String())
-		s.push(func() {
-			if s.ev.Connection != nil {
-				s.ev.Connection(name, st)
-			}
-		})
-		if st == webrtc.PeerConnectionStateFailed {
-			s.fail(fmt.Errorf("the %s connection failed", name))
+	pc.OnConnectionStateChange(func(webrtc.PeerConnectionState) { p.stateChanged() })
+	return p, nil
+}
+
+// stateChanged tells the caller of the connection's state. pion calls its
+// state-change handlers on goroutines of their own, which can run in
+// either order, so the state is read afresh here and passed on only when
+// it changed: a state can be skipped, never told out of order.
+func (p *peer) stateChanged() {
+	p.mu.Lock()
+	st := p.pc.ConnectionState()
+	if st == p.state {
+		p.mu.Unlock()
+		return
+	}
+	p.state = st
+	s, name := p.s, p.name
+	s.push(func() {
+		if s.ev.Connection != nil {
+			s.ev.Connection(name, st)
 		}
 	})
-	return p, nil
+	p.mu.Unlock()
+	s.log.Debug("sfuclient: connection", "pc", name, "state", st.String())
+	if st == webrtc.PeerConnectionStateFailed {
+		s.fail(fmt.Errorf("the %s connection failed", name))
+	}
 }
 
 // negotiate offers Pub again soon, with whatever has changed by then.

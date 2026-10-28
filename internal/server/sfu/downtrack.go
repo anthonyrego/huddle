@@ -125,7 +125,7 @@ func (d *downTrack) readRTCP(r interceptor.RTCPReader) {
 // write sends one packet of the publisher's to the subscriber. level is
 // the packet's RFC 6464 byte, when hasLevel.
 func (d *downTrack) write(p *rtp.Packet, level byte, hasLevel bool, now time.Time) {
-	if !d.sub.down.connected.Load() {
+	if !d.sub.down.connected() {
 		return
 	}
 	d.mu.Lock()

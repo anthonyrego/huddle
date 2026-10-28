@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -45,9 +44,6 @@ type transport struct {
 	role role
 	pc   *webrtc.PeerConnection
 	name signal.PC
-	// connected says media can flow: down tracks write nothing until it
-	// does.
-	connected atomic.Bool
 
 	// op serializes what changes the connection's descriptions, and holds
 	// the client's candidates until there's a remote description to add
@@ -82,7 +78,6 @@ func newTransport(p *participant, r role) (*transport, error) {
 	})
 	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
 		p.log.Debug("sfu: connection", "pc", r.String(), "state", st.String())
-		t.connected.Store(st == webrtc.PeerConnectionStateConnected)
 		if st == webrtc.PeerConnectionStateFailed {
 			p.log.Warn("sfu: connection failed", "pc", r.String())
 			p.kick("the " + string(name) + " connection failed")
@@ -92,6 +87,13 @@ func newTransport(p *participant, r role) (*transport, error) {
 		pc.OnTrack(p.onTrack)
 	}
 	return t, nil
+}
+
+// connected says media can flow (down tracks write nothing until then).
+// It asks pion, whose state-change handlers run on goroutines of their own
+// and can come in either order.
+func (t *transport) connected() bool {
+	return t.pc.ConnectionState() == webrtc.PeerConnectionStateConnected
 }
 
 // answer takes the client's offer on up and sends the answer.

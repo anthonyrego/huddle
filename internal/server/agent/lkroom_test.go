@@ -3,9 +3,9 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math/rand/v2"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,7 +19,8 @@ import (
 
 // TestAudioOnly joins LiveKit as the whiteboard while someone publishes a
 // voice and a camera: the whiteboard is subscribed to the voice and not
-// to the camera. Against a running LiveKit only:
+// to the camera, is handed the voice, and counts one person. Against a
+// running LiveKit only:
 //
 //	HUDDLE_LIVEKIT_TEST=ws://host:7880 LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret go test ./internal/server/agent -run AudioOnly -v
 func TestAudioOnly(t *testing.T) {
@@ -59,12 +60,22 @@ func TestAudioOnly(t *testing.T) {
 		}
 	}()
 
-	a := New(Config{Room: room, Minter: m, LiveKitURL: url, Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
-	r, err := a.join(ctx)
+	var mu sync.Mutex
+	var arrived, handed []string
+	mr, err := LiveKit{Minter: m, URL: url}.Join(ctx, room, Hearing{
+		Arrived: func(identity, name string) { mu.Lock(); arrived = append(arrived, identity+" "+name); mu.Unlock() },
+		Left:    func(string) {},
+		Voice: func(identity, _ string, track VoiceTrack) {
+			mu.Lock()
+			handed = append(handed, identity+" "+track.Codec().MimeType)
+			mu.Unlock()
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.leave()
+	defer mr.Leave()
+	r := mr.(*lkRoom)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		var audio, video, audioSub, videoSub int
@@ -87,16 +98,27 @@ func TestAudioOnly(t *testing.T) {
 		if videoSub > 0 {
 			t.Fatalf("the whiteboard is subscribed to %d videos", videoSub)
 		}
-		if audio == 1 && video == 1 && audioSub == 1 {
+		mu.Lock()
+		nHanded := len(handed)
+		mu.Unlock()
+		if audio == 1 && video == 1 && audioSub == 1 && nHanded > 0 {
 			// Give a wrong subscription a moment to show up too.
 			if time.Now().After(deadline.Add(-7 * time.Second)) {
-				t.Logf("voice subscribed, camera not")
-				return
+				break
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("after 10 s: %d audio (%d subscribed), %d video", audio, audioSub, video)
+			t.Fatalf("after 10 s: %d audio (%d subscribed), %d video; voices handed over: %d", audio, audioSub, video, nHanded)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(handed) != 1 || handed[0] != "someone "+webrtc.MimeTypeOpus {
+		t.Fatalf("voices handed over: %q", handed)
+	}
+	if len(arrived) == 0 || arrived[0] != "someone Someone" || mr.People() != 1 {
+		t.Fatalf("arrived %q, %d people", arrived, mr.People())
+	}
+	t.Logf("voice subscribed and handed over, camera not; arrived %q", arrived)
 }

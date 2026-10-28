@@ -1,14 +1,14 @@
 // Package agent is the whiteboard: one per active room, run by huddled
-// serve. It joins the room's LiveKit session as an agent participant and
-// listens to each person's track (ears.go: Opus decoded in pure Go, a
-// voice detector, and a streaming transcription session per person). The
-// transcript goes through the gate (internal/gate); what the gate lets
-// through, and typed commands from the apps, queue for the brain (one
-// gemini Live session per room, brain.go), one command in flight at a
-// time. What the brain draws becomes board versions in the store
-// (versions.go), laid out here and sent to every app. Its voice is
-// published on its own track only for answers the voice policy allows
-// (voice.go).
+// serve. It joins the room's media (media.go: LiveKit, or huddled's own
+// SFU) as an agent participant and listens to each person's voice
+// (ears.go: Opus decoded in pure Go, a voice detector, and a streaming
+// transcription session per person). The transcript goes through the gate
+// (internal/gate); what the gate lets through, and typed commands from the
+// apps, queue for the brain (one gemini Live session per room, brain.go),
+// one command in flight at a time. What the brain draws becomes board
+// versions in the store (versions.go), laid out here and sent to every
+// app. Its voice is published on its own track only for answers the voice
+// policy allows (voice.go).
 package agent
 
 import (
@@ -24,7 +24,6 @@ import (
 
 	"github.com/anthonyrego/huddle/internal/gate"
 	"github.com/anthonyrego/huddle/internal/live"
-	"github.com/anthonyrego/huddle/internal/server/lktoken"
 	"github.com/anthonyrego/huddle/internal/server/store"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
@@ -41,12 +40,12 @@ const Identity = "whiteboard"
 
 // Config is what an agent runs with.
 type Config struct {
-	Room       string
-	Store      Store
-	Hub        Hub
-	APIKey     string
-	Minter     lktoken.Minter
-	LiveKitURL string
+	Room   string
+	Store  Store
+	Hub    Hub
+	APIKey string
+	// Media is how the whiteboard joins the room's media.
+	Media Media
 
 	BrainModel, EarModel, SummaryModel string // the defaults when empty
 	// Voice is the policy when the meeting has none set (VoiceAnswers
@@ -122,7 +121,7 @@ type Agent struct {
 
 	brain brain
 	voice *voiceOut
-	room  *lkRoom
+	room  MediaRoom
 
 	status   wire.AgentStatus
 	names    map[string]string // identity -> display name
@@ -238,8 +237,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.room, err = a.join(ctx); err != nil {
 		return err
 	}
-	defer a.room.leave()
-	go a.voice.run(ctx, a.room.publish)
+	defer a.room.Leave()
+	go a.voice.run(ctx, a.room.Publish)
 
 	a.brain.connect(ctx, a)
 	a.log.Info("agent: in the room", "head", a.b.head, "voice", a.policy, "resume", a.brain.handle != "")
@@ -261,7 +260,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.onBrain(ctx, ev, ok)
 		case <-tick.C:
 			a.tick(ctx)
-			if a.room.count() > 0 || a.cfg.Hub.Count(a.cfg.Room) > 0 {
+			if a.room.People() > 0 || a.cfg.Hub.Count(a.cfg.Room) > 0 {
 				a.lastSeen = time.Now()
 			} else if time.Since(a.lastSeen) > a.cfg.Idle && a.turn == nil {
 				a.log.Info("agent: the room is empty; leaving")

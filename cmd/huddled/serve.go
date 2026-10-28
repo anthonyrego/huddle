@@ -83,7 +83,7 @@ func runServe(args []string) error {
 	var agents *agent.Manager
 	if key := os.Getenv("GEMINI_API_KEY"); key != "" && os.Getenv("HUDDLE_WHITEBOARD") != "0" {
 		agents = agent.NewManager(ctx, agent.Config{
-			Store: st, Hub: hub, APIKey: key, Minter: minter, LiveKitURL: lkURL,
+			Store: st, Hub: hub, APIKey: key, Media: agent.LiveKit{Minter: minter, URL: lkURL},
 			Voice: os.Getenv("HUDDLE_VOICE"),
 		})
 		defer func() { stop(); agents.Wait() }()

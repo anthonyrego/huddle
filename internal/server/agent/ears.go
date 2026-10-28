@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/pion/opus"
-	"github.com/pion/webrtc/v4"
 
 	"github.com/anthonyrego/huddle/internal/gate"
 	"github.com/anthonyrego/huddle/internal/live"
@@ -60,7 +59,7 @@ type audioMsg struct {
 }
 
 // listen hears one person's track until it ends.
-func (a *Agent) listen(ctx context.Context, track *webrtc.TrackRemote, identity, name string) {
+func (a *Agent) listen(ctx context.Context, track VoiceTrack, identity, name string) {
 	a.log.Info("agent: listening", "identity", identity, "codec", track.Codec().MimeType)
 	dec, err := opus.NewDecoderWithOutput(earRate, 1)
 	if err != nil {

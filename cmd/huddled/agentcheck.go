@@ -173,7 +173,7 @@ func runAgentCheck(args []string) error {
 	rec := &recorder{start: time.Now()}
 	hub := &wshub.Hub{}
 	agents := agent.NewManager(ctx, agent.Config{
-		Store: st, Hub: recHub{hub, rec}, APIKey: key, Minter: minter, LiveKitURL: lkURL,
+		Store: st, Hub: recHub{hub, rec}, APIKey: key, Media: agent.LiveKit{Minter: minter, URL: lkURL},
 		AutoEvery: *autoEvery, Trace: rec.trace, Idle: 10 * time.Minute, ReconnectEvery: *reconnect,
 	})
 	hub.OnMessage = func(room, identity string, e wire.Envelope) { agents.Deliver(room, identity, e) }

@@ -65,7 +65,7 @@ network and decoder.
 - `huddle video-probe`: VideoToolbox through purego, end to end.
 - The seams: the video types in `internal/rtc`, and `cmd/huddle/video.go`.
 
-**Track P, the pipeline.**
+**Track P, the pipeline (merged 2026-10-28).**
 - **Capture:**
   - The camera through AVCaptureSession, asking for NV12. SDL3's camera
     bindings aren't usable yet, and AVCaptureSession hands VideoToolbox its
@@ -94,7 +94,7 @@ network and decoder.
   - layer switches within 1 s
   - lip sync within ±60 ms median
 
-**Track U, tiles and the stage.**
+**Track U, tiles and the stage (merged 2026-10-28).**
 - **Drawing:** NV12 planes go up as two textures, and a pass converts them
   to RGBA for each tile.
 - **Layout:**
@@ -106,7 +106,7 @@ network and decoder.
 - **Gate:** renders with 1 to 7 people, a share, the minimum window, both
   themes, and upload costs measured.
 
-**Integration.**
+**Integration (agent checks passed 2026-10-28; the user's gate is in AGENTS.md, "The stage 2 gate").**
 - **Alone:** pattern bots for cameras and a share, plus the echo bot.
 - **Two Macs:** cameras both ways, a display and a window shared, the board
   drawing during a share, and a 1 Mbps link that drops the video a layer

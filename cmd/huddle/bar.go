@@ -1,11 +1,14 @@
 package main
 
 // The bar along the bottom of the meeting window: the room and who you
-// are. Track V adds the voice session here: who's in the room, who's
-// talking, and the mic.
+// are, then the voice session: who's in the room (a dot lights while they
+// talk), and the mic, which m or a click mutes.
 
 import (
+	"strings"
+
 	"github.com/anthonyrego/huddle/internal/draw"
+	"github.com/anthonyrego/huddle/internal/rtc"
 	"github.com/anthonyrego/huddle/internal/text"
 	"github.com/anthonyrego/huddle/internal/ui"
 )
@@ -22,9 +25,11 @@ func (s *meetingScene) drawBar(c *ui.Ctx, l *draw.List, r draw.Rect) {
 	}
 	lay := s.tc.lay(c, room, text.SansSemibold, 13)
 	y := r.Y + (r.H-lay.Height)/2
-	putFitAt(c, &s.tc, l, lay, r.X+20, y, r.W*0.5, c.Pal.Text, text.SansSemibold, 13)
+	putFitAt(c, &s.tc, l, lay, r.X+20, y, r.W*0.25, c.Pal.Text, text.SansSemibold, 13)
+	x := r.X + 20 + min(lay.Width, r.W*0.25) + 12
 	sub := ""
 	switch {
+	case s.call != nil:
 	case s.st.identity != "":
 		sub = "you are " + s.st.identity
 	case s.st.conn == connNoRoom:
@@ -32,8 +37,130 @@ func (s *meetingScene) drawBar(c *ui.Ctx, l *draw.List, r draw.Rect) {
 	}
 	if sub != "" {
 		who := s.tc.lay(c, sub, text.SansRegular, 12)
-		drawAt(l, who, r.X+20+min(lay.Width, r.W*0.5)+12, r.Y+(r.H-who.Height)/2, c.Pal.TextMuted)
+		drawAt(l, who, x, r.Y+(r.H-who.Height)/2, c.Pal.TextMuted)
 	}
+	right := r.X + r.W - 20
 	hint := s.tc.lay(c, "f  fit", text.SansRegular, 11.5)
-	drawAt(l, hint, r.X+r.W-hint.Width-20, r.Y+(r.H-hint.Height)/2, c.Pal.TextFaint)
+	right -= hint.Width
+	drawAt(l, hint, right, r.Y+(r.H-hint.Height)/2, c.Pal.TextFaint)
+	s.muteRect = draw.Rect{}
+	if s.call == nil {
+		return
+	}
+	v := s.call.snapshot()
+	right = s.drawMic(c, l, v, right-16, r)
+	s.drawPeople(c, l, v, x, right-12, r)
+}
+
+// drawMic draws the mic control ending at right and returns where it
+// starts.
+func (s *meetingScene) drawMic(c *ui.Ctx, l *draw.List, v callState, right float32, r draw.Rect) float32 {
+	label := v.status
+	if v.canMute {
+		label += "  ·  m"
+	}
+	lay := s.tc.lay(c, label, text.SansSemibold, 12)
+	h := float32(28)
+	pill := draw.Rect{X: right - lay.Width - 34, Y: r.Y + (r.H-h)/2, W: lay.Width + 34, H: h}
+	fill, dot, col := c.Pal.Surface, c.Pal.TextFaint, c.Pal.Text
+	switch v.status {
+	case callOn:
+		dot = c.Pal.Success
+		if v.talking[v.self] {
+			dot = c.Pal.Accent
+		}
+	case callMuted:
+		dot, col = c.Pal.Error, c.Pal.Error
+	case callLost:
+		dot, col = c.Pal.Error, c.Pal.TextMuted
+	case callListening, callJoining:
+		col = c.Pal.TextMuted
+	}
+	l.BorderedRect(pill, fill, c.Pal.Border, 1, draw.Uniform(h/2))
+	l.Rect(draw.Rect{X: pill.X + 12, Y: pill.Y + h/2 - 4, W: 8, H: 8}, dot, draw.Uniform(4))
+	drawAt(l, lay, pill.X+26, pill.Y+(h-lay.Height)/2, col)
+	if v.canMute {
+		s.muteRect = pill
+	}
+	return pill.X
+}
+
+// drawPeople draws a chip per person in the room, you first, between x and
+// right; those that don't fit become "+N".
+func (s *meetingScene) drawPeople(c *ui.Ctx, l *draw.List, v callState, x, right float32, r draw.Rect) {
+	type chip struct {
+		name    string
+		talking bool
+		agent   bool
+	}
+	var chips []chip
+	if v.self != "" {
+		chips = append(chips, chip{name: "You", talking: v.talking[v.self] && !v.muted})
+	}
+	for _, p := range v.people {
+		chips = append(chips, chip{name: displayName(p), talking: v.talking[p.Identity], agent: p.Agent})
+	}
+	h := float32(26)
+	for i, ch := range chips {
+		lay := s.tc.lay(c, ch.name, text.SansRegular, 12)
+		w := lay.Width + 30
+		more := len(chips) - i - 1
+		reserve := float32(0)
+		if more > 0 {
+			reserve = 40
+		}
+		if x+w+reserve > right {
+			rest := s.tc.lay(c, "+"+itoa(len(chips)-i), text.SansSemibold, 12)
+			if x+rest.Width <= right {
+				drawAt(l, rest, x, r.Y+(r.H-rest.Height)/2, c.Pal.TextMuted)
+			}
+			return
+		}
+		box := draw.Rect{X: x, Y: r.Y + (r.H-h)/2, W: w, H: h}
+		stroke, dot := c.Pal.Border, c.Pal.TextFaint
+		if ch.talking {
+			stroke, dot = c.Pal.Accent, c.Pal.Accent
+		}
+		l.BorderedRect(box, c.Pal.Surface, stroke, 1, draw.Uniform(h/2))
+		if ch.agent {
+			l.Rect(draw.Rect{X: box.X + 10, Y: box.Y + h/2 - 4, W: 8, H: 8}, dot, draw.Uniform(2))
+		} else {
+			l.Rect(draw.Rect{X: box.X + 10, Y: box.Y + h/2 - 4, W: 8, H: 8}, dot, draw.Uniform(4))
+		}
+		drawAt(l, lay, box.X+22, box.Y+(h-lay.Height)/2, c.Pal.Text)
+		x += w + 6
+	}
+}
+
+// displayName is how a person is shown: their name, else their identity
+// without the dev join's suffix.
+func displayName(p rtc.Participant) string {
+	if p.Name != "" {
+		return p.Name
+	}
+	if i := strings.LastIndexByte(p.Identity, '-'); i > 0 {
+		return p.Identity[:i]
+	}
+	return p.Identity
+}
+
+func itoa(n int) string {
+	if n < 10 {
+		return string(rune('0' + n))
+	}
+	return itoa(n/10) + string(rune('0'+n%10))
+}
+
+// barEvent handles the bar's input: m, or a click on the mic, mutes.
+func (s *meetingScene) barEvent(e ui.Event) bool {
+	if s.call == nil {
+		return false
+	}
+	switch {
+	case e.Kind == ui.KeyPress && e.Mods == 0 && e.Key == 'm' && !e.Repeat:
+		return s.call.toggleMute()
+	case e.Kind == ui.PointerDown && e.Button == 1 && s.muteRect.W > 0 && s.muteRect.Contains(e.Pos):
+		return s.call.toggleMute()
+	}
+	return false
 }

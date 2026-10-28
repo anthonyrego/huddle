@@ -36,6 +36,11 @@ type meetingScene struct {
 	// queues a frame for the server (nil without a connection).
 	translate func(*sdl.Event) (ui.Event, bool)
 	send      func(kind string, body any) bool
+
+	// call is the voice session (nil without a room); muteRect is where the
+	// bar drew the mic, for clicks (bar.go).
+	call     *call
+	muteRect draw.Rect
 }
 
 func newMeetingScene(shaper *text.Shaper, scale func() float32, mt *meeting) *meetingScene {
@@ -125,6 +130,9 @@ func (s *meetingScene) event(ev *sdl.Event, pal theme.Palette) bool {
 		return false
 	}
 	c := s.ctx(pal, time.Now())
+	if s.barEvent(uev) {
+		return true
+	}
 	if uev.Kind == ui.KeyPress && uev.Mods == 0 && uev.Key == 'f' {
 		s.view.Fit(c.Now)
 		return true

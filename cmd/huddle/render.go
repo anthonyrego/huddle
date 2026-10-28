@@ -98,6 +98,8 @@ func runRender(args []string) error {
 	agent := fs.String("agent", "", "the whiteboard's state (idle, listening, working, speaking, auto, offline)")
 	detail := fs.String("agent-detail", "", "with -agent: the detail after it")
 	queued := fs.Int("queued", 0, "with -agent: commands waiting")
+	people := fs.String("people", "", "the voice session's people, comma-separated: a trailing * is talking, ! the whiteboard (and you first, as you)")
+	mic := fs.String("mic", "", "with -people: the mic, on|muted|listening|lost")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -126,6 +128,9 @@ func runRender(args []string) error {
 		st.agent = wire.AgentStatus{State: wire.AgentState(*agent), Detail: *detail, Queued: *queued}
 	}
 	s.apply(st, now)
+	if *people != "" {
+		s.call = renderCall(*people, *mic)
+	}
 	w, h := float32(*width), float32(*height)
 	var l draw.List
 	s.draw(&l, w, h, pal, now) // lays the board out at now

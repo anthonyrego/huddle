@@ -73,6 +73,7 @@ func runApp(args []string) error {
 	exitAfter := fs.Duration("exit-after", 0, "quit by itself after this long (unattended runs)")
 	size := fs.String("size", "1200x800", "window size in points, WxH")
 	themeMode := fs.String("theme", "", "the window's theme, light|dark (default: the system's)")
+	noVoice := fs.Bool("no-voice", false, "join the room's audio without the mic: listen through the speakers only (agents' runs)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -146,7 +147,12 @@ func runApp(args []string) error {
 	default:
 		c := newConn(*server, *room, *name, mt)
 		a.scene.send = c.send
-		go func() { defer close(done); c.run(ctx) }()
+		cl := newCall(*noVoice, mt.wake)
+		c.onJoin = cl.onJoin
+		a.scene.call = cl
+		callDone := make(chan struct{})
+		go func() { defer close(callDone); cl.run(ctx) }()
+		go func() { defer close(done); c.run(ctx); <-callDone }()
 	}
 	a.window.Handle().Show()
 	err = a.run(*exitAfter)

@@ -27,6 +27,9 @@ type conn struct {
 	mt                 *meeting
 	joined             wire.Joined
 	out                chan []byte // frames to send (commands)
+	// onJoin, when set, gets each join's answer (the voice session joins
+	// LiveKit with its token).
+	onJoin func(wire.Joined)
 }
 
 func newConn(server, room, name string, mt *meeting) *conn {
@@ -56,6 +59,9 @@ func (c *conn) join(ctx context.Context) error {
 	}
 	c.mt.update(func(s *meetingState) { s.room, s.identity = c.joined.Room, c.joined.Identity })
 	slog.Info("conn: joined", "room", c.joined.Room, "identity", c.joined.Identity, "livekit", c.joined.LiveKitURL)
+	if c.onJoin != nil {
+		c.onJoin(c.joined)
+	}
 	return nil
 }
 

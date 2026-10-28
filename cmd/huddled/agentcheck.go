@@ -177,10 +177,6 @@ func runAgentCheck(args []string) error {
 		return err
 	}
 	defer md.close()
-	if md.agent == nil {
-		ln.Close()
-		return fmt.Errorf("agent-check: the whiteboard can't join %s media yet (the media server's step 2)", md.kind)
-	}
 	rec := &recorder{start: time.Now()}
 	hub := &wshub.Hub{}
 	agents := agent.NewManager(ctx, agent.Config{
@@ -195,7 +191,7 @@ func runAgentCheck(args []string) error {
 	defer srv.Close()
 	server := "http://" + ln.Addr().String()
 
-	fmt.Printf("agent-check %s: room %s, voice %s, %d lines over %s\n", script.Name, room, *voice, len(timing.Lines),
+	fmt.Printf("agent-check %s: room %s, voice %s, media %s, %d lines over %s\n", script.Name, room, *voice, md.kind, len(timing.Lines),
 		(time.Duration(timing.DurationMs) * time.Millisecond).Round(time.Second))
 	agents.Ensure(room)
 	if !rec.waitFor(func(e agent.Event) bool { return e.Kind == agent.EvConnect }, 30*time.Second) {
@@ -254,7 +250,7 @@ func runAgentCheck(args []string) error {
 		return err
 	}
 	defer st2.Close()
-	rep := score(script, timing, evs, t0Ms, *voice)
+	rep := score(script, timing, evs, t0Ms, *voice, md.kind)
 	head, _ := st2.Head(rctx, room)
 	if head > 0 {
 		v, err := st2.Version(rctx, room, head)
@@ -338,9 +334,9 @@ type cmdEv struct {
 	line  int // the line it matched, -1 for none
 }
 
-func score(s *fixturemeet.Script, t *fixturemeet.Timing, evs []agent.Event, t0 int64, voice string) *report {
+func score(s *fixturemeet.Script, t *fixturemeet.Timing, evs []agent.Event, t0 int64, voice, media string) *report {
 	r := &report{}
-	r.add("== %s (voice %s)", s.Name, voice)
+	r.add("== %s (voice %s, media %s)", s.Name, voice, media)
 	var cmds []*cmdEv
 	turnOf := map[string]int{} // command id -> order its turn started
 	firstVersion := map[string]int64{}

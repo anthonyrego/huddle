@@ -89,8 +89,6 @@ func runServe(args []string) error {
 	switch {
 	case key == "" || os.Getenv("HUDDLE_WHITEBOARD") == "0":
 		slog.Warn("serve: no GEMINI_API_KEY: the whiteboard is off")
-	case md.agent == nil:
-		slog.Warn("serve: the whiteboard is off: it joins builtin media from the media server's step 2", "media", md.kind)
 	default:
 		agents = agent.NewManager(ctx, agent.Config{
 			Store: st, Hub: hub, APIKey: key, Media: md.agent,

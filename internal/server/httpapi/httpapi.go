@@ -96,6 +96,10 @@ func wsURL(r *http.Request) string {
 	return scheme + "://" + r.Host + "/ws"
 }
 
+// Slug is the room name a dev join gives a name: dev tools that join
+// LiveKit themselves (huddled bot) use it to land in the same room.
+func Slug(s string) string { return slug(s) }
+
 // slug lowercases s and keeps letters and digits, joining words with
 // dashes: "Design review!" → "design-review".
 func slug(s string) string {

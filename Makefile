@@ -28,7 +28,7 @@ ROOM ?= test
 
 GO = CGO_ENABLED=0 go
 
-.PHONY: build app run render test test-db vet shaders shaders-check nocgo check \
+.PHONY: build app run render test test-db vet shaders shaders-check nocgo check bot voice-check \
 	dev-up dev-down livekit server notarize lan-ip
 
 build:
@@ -105,3 +105,13 @@ notarize: app
 
 lan-ip:
 	@echo $(LAN_IP)
+
+# Dev participants in ROOM, through LiveKit with the dev key:
+# make bot ARGS="echo"  |  make bot ARGS="play -ogg .dev/fixtures/samantha.ogg"
+bot: build
+	@LIVEKIT_URL="$(LIVEKIT_URL)" LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret ./build/huddled bot $(word 1,$(ARGS)) -room "$(ROOM)" $(wordlist 2,99,$(ARGS))
+
+# The voice gate's file-to-file runs through LiveKit (make server running):
+# click latency, and speech at 0, 5 and 10% loss with 40 ms jitter, WAVs in .dev/out.
+voice-check: build
+	./build/huddle voice-check -server "$(SERVER)" $(ARGS)

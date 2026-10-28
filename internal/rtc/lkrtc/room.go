@@ -54,7 +54,11 @@ func NewSim(loss float64, jitterAmount time.Duration, reorder float64) func() *n
 
 var logOnce sync.Once
 
-// sdkLogs sends lksdk's and pion's logs to slog, warnings and up.
+// QuietSDKLogs sends lksdk's and pion's logs to slog's default handler,
+// warnings and up (at info they log every ICE state change). Connect
+// calls it; tools that use lksdk directly (the bots) call it first.
+func QuietSDKLogs() { sdkLogs() }
+
 func sdkLogs() {
 	logOnce.Do(func() {
 		h := slog.Default().Handler()

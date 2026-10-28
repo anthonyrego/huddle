@@ -55,6 +55,9 @@ type Events struct {
 	Left         func(identity string)
 	Levels       func([]Level)
 	Disconnected func(err error) // the room ended or the connection was lost for good
+	// Reconnecting and Reconnected bracket the SDK's own attempt to get a
+	// dropped connection back; Disconnected follows if it can't.
+	Reconnecting, Reconnected func()
 }
 
 // Mic is where the room takes the local voice from: 10 ms frames, already

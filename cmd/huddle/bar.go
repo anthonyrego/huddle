@@ -31,6 +31,8 @@ func (s *meetingScene) drawBar(c *ui.Ctx, l *draw.List, r draw.Rect) {
 	x := r.X + 20 + min(lay.Width, r.W*0.25) + 12
 	sub := ""
 	switch {
+	case connDown(s.st.conn) && s.st.server != "":
+		sub = "server " + s.st.server
 	case s.call != nil:
 	case s.st.identity != "":
 		sub = "you are " + s.st.identity
@@ -40,6 +42,7 @@ func (s *meetingScene) drawBar(c *ui.Ctx, l *draw.List, r draw.Rect) {
 	if sub != "" {
 		who := s.tc.lay(c, sub, text.SansRegular, 12)
 		drawAt(l, who, x, r.Y+(r.H-who.Height)/2, c.Pal.TextMuted)
+		x += who.Width + 14
 	}
 	right := r.X + r.W - 20
 	hint := s.tc.lay(c, "f  fit", text.SansRegular, 11.5)
@@ -78,6 +81,9 @@ func (s *meetingScene) drawMic(c *ui.Ctx, l *draw.List, v callState, right float
 	if v.noEcho && v.status == callOn {
 		label = "Mic on · use headphones"
 	}
+	if v.status == callRetry && v.retryIn > 0 {
+		label += " · retrying in " + itoa(v.retryIn) + " s"
+	}
 	if v.canMute {
 		label += "  ·  m"
 	}
@@ -96,9 +102,11 @@ func (s *meetingScene) drawMic(c *ui.Ctx, l *draw.List, v callState, right float
 		}
 	case callMuted:
 		dot, col = c.Pal.Error, c.Pal.Error
-	case callLost:
+	case callLost, callRetry:
 		dot, col = c.Pal.Error, c.Pal.TextMuted
-	case callListening, callJoining, callSwitching:
+	case callReconnecting:
+		dot, col = c.Pal.Warning, c.Pal.TextMuted
+	case callListening, callJoining, callSwitching, callWaiting:
 		col = c.Pal.TextMuted
 	}
 	l.BorderedRect(pill, fill, c.Pal.Border, 1, draw.Uniform(h/2))

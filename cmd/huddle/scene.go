@@ -113,11 +113,14 @@ func (s *meetingScene) drawStatus(c *ui.Ctx, l *draw.List) {
 		status = connOffline
 	}
 	dot := c.Pal.TextFaint
-	switch s.st.conn {
-	case connConnected, connFixture:
+	switch {
+	case s.st.conn == connConnected || s.st.conn == connFixture:
 		dot = c.Pal.Success
-	case connRetrying, connOffline:
+	case connDown(s.st.conn):
 		dot = c.Pal.Error
+		if s.st.retryIn > 0 {
+			status += " · retrying in " + itoa(s.st.retryIn) + " s"
+		}
 	}
 	if a := agentLine(s.st.agent); a != "" && s.st.conn == connConnected {
 		status = a

@@ -106,8 +106,18 @@ func (c *Connector) Connect(ctx context.Context, j rtc.Join, ev rtc.Events) (rtc
 			}
 			r.mu.Unlock()
 		},
-		OnReconnecting: func() { slog.Warn("voice: reconnecting") },
-		OnReconnected:  func() { slog.Info("voice: reconnected") },
+		OnReconnecting: func() {
+			slog.Warn("voice: reconnecting")
+			if ev.Reconnecting != nil {
+				ev.Reconnecting()
+			}
+		},
+		OnReconnected: func() {
+			slog.Info("voice: reconnected")
+			if ev.Reconnected != nil {
+				ev.Reconnected()
+			}
+		},
 		OnDisconnectedWithReason: func(reason lksdk.DisconnectionReason) {
 			if r.left.Load() {
 				return

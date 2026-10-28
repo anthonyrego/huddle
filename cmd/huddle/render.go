@@ -99,12 +99,14 @@ func runRender(args []string) error {
 	dark := fs.Bool("dark", false, "use the dark palette")
 	room := fs.String("room", "design-review", "the room the bar names")
 	identity := fs.String("identity", "", "who the bar says you are")
-	conn := fs.String("conn", connConnected, "the connection state the pill shows")
+	conn := fs.String("conn", connConnected, "the connection state the pill shows (or unreachable, refused, retrying)")
+	retryIn := fs.Int("retry-in", 0, "with a -conn that is down: seconds to the next try")
+	server := fs.String("server", "", "the server host the bar names while the connection is down")
 	agent := fs.String("agent", "", "the whiteboard's state (idle, listening, working, speaking, auto, offline)")
 	detail := fs.String("agent-detail", "", "with -agent: the detail after it")
 	queued := fs.Int("queued", 0, "with -agent: commands waiting")
 	people := fs.String("people", "", "the voice session's people, comma-separated: a trailing * is talking, ! the whiteboard (and you first, as you)")
-	mic := fs.String("mic", "", "with -people: the mic, on|muted|listening|lost|noecho (on without echo cancelling: it wouldn't start)")
+	mic := fs.String("mic", "", "with -people: the mic, on|muted|listening|lost|noecho (on without echo cancelling: it would not start)|waiting|retry|reconnecting")
 	menu := fs.Bool("devices", false, "with -people: the device menu open, on made-up devices")
 	echoOff := fs.Bool("echo-off", false, "with -devices: echo cancelling turned off in the menu")
 	if err := fs.Parse(args); err != nil {
@@ -154,7 +156,15 @@ func runRender(args []string) error {
 	now := time.Now()
 	sc := float32(*scale)
 	s := newMeetingScene(o.shaper, func() float32 { return sc }, &meeting{})
-	st := meetingState{rev: 1, conn: *conn, room: *room, identity: *identity, seq: seq, ops: ops, place: place}
+	switch *conn {
+	case "unreachable":
+		*conn = connUnreachable
+	case "refused":
+		*conn = connRefused
+	case "retrying":
+		*conn = connRetrying
+	}
+	st := meetingState{rev: 1, conn: *conn, room: *room, identity: *identity, seq: seq, ops: ops, place: place, server: *server, retryIn: *retryIn}
 	if *typed != "" {
 		s.field.SetText(*typed)
 		s.field.Focus(true)

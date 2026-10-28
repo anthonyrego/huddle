@@ -155,7 +155,7 @@ func runApp(args []string) error {
 			}
 		}
 		cl := newCall(*noVoice, paths.Data, mt.wake)
-		c.onJoin = cl.onJoin
+		c.onJoin, cl.rejoin = cl.onJoin, c.rejoin
 		a.scene.call = cl
 		callDone := make(chan struct{})
 		go func() { defer close(callDone); cl.run(ctx) }()

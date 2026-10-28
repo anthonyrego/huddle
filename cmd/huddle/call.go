@@ -28,18 +28,28 @@ import (
 
 // Call states for the bar.
 const (
-	callJoining   = "Joining voice…"
-	callOn        = "Mic on"
-	callMuted     = "Muted"
-	callListening = "Listening only"
-	callLost      = "Voice lost"
-	callSwitching = "Switching…"
+	callWaiting      = "Voice waits for the server"
+	callJoining      = "Joining voice…"
+	callOn           = "Mic on"
+	callMuted        = "Muted"
+	callListening    = "Listening only"
+	callLost         = "Voice lost"
+	callRetry        = "Voice can't connect" // with retryIn: the countdown
+	callReconnecting = "Reconnecting voice…"
+	callSwitching    = "Switching…"
 )
+
+// tokenFresh is how long a join's token is retried with. The server's
+// tokens can join for 10 minutes; past this, voice asks the connection to
+// join again for a new one.
+var tokenFresh = 5 * time.Minute
 
 type call struct {
 	noVoice bool
 	wake    func()
 	data    string // where devices.json is kept ("" keeps nothing)
+	// rejoin asks the connection for a fresh join (conn.rejoin).
+	rejoin func()
 
 	mu       sync.Mutex
 	st       callState
@@ -61,10 +71,13 @@ type callState struct {
 	canMute bool
 	noEcho  bool   // the mic is on without echo cancelling because it wouldn't start
 	echoErr string // why
+	retryIn int    // with callRetry: seconds to the next try
+	lostErr string // why voice isn't connected
+	before  string // the status a reconnect interrupted
 }
 
 func newCall(noVoice bool, data string, wake func()) *call {
-	c := &call{noVoice: noVoice, data: data, wake: wake, joined: make(chan wire.Joined, 1), st: callState{status: callJoining, talking: map[string]bool{}}}
+	c := &call{noVoice: noVoice, data: data, wake: wake, joined: make(chan wire.Joined, 1), st: callState{status: callWaiting, talking: map[string]bool{}}}
 	if data != "" {
 		c.prefs = readDevicePrefs(data)
 	}
@@ -105,36 +118,81 @@ func (c *call) onJoin(j wire.Joined) {
 	c.joined <- j
 }
 
-// run joins voice with the first token and again with the next one after
-// voice is lost, until ctx ends.
+// run joins voice with the connection's token and keeps it joined until
+// ctx ends. When joining fails or the room is lost, it tries again with
+// backoff on its own (the meeting connection may be fine while LiveKit is
+// down); a token too old to join with is traded for a new join. A new join
+// from the connection (it reconnected, as someone new) moves voice to it.
 func (c *call) run(ctx context.Context) {
 	defer c.hangUp()
+	var j wire.Joined
+	var got time.Time
+	backoff := time.Second
 	for {
-		var j wire.Joined
-		select {
-		case <-ctx.Done():
-			return
+		if j.Token == "" {
+			c.update(func(s *callState) bool { s.status, s.retryIn = callWaiting, 0; return true })
+			select {
+			case <-ctx.Done():
+				return
+			case j = <-c.joined:
+				got = time.Now()
+			}
+		}
+		select { // the newest join wins
 		case j = <-c.joined:
+			got = time.Now()
+		default:
 		}
+		start := time.Now()
 		lost := make(chan error, 1)
-		if err := c.connect(ctx, j, lost); err != nil {
-			slog.Error("voice: couldn't join", "err", err)
-			c.update(func(s *callState) bool { s.status, s.detail = callLost, err.Error(); return true })
-			c.hangUp()
-			continue // wait for the connection's next join
+		err := c.connect(ctx, j, lost)
+		if err == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case err = <-lost:
+			case nj := <-c.joined:
+				slog.Info("voice: moving to the new join", "identity", nj.Identity)
+				c.hangUp()
+				j, got, backoff = nj, time.Now(), time.Second
+				continue
+			}
 		}
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return
-		case err := <-lost:
-			c.update(func(s *callState) bool { s.status, s.detail, s.people = callLost, err.Error(), nil; return true })
-			c.hangUp()
+		}
+		c.hangUp()
+		if time.Since(start) > 30*time.Second {
+			backoff = time.Second // it was up a while: the loss is news
+		}
+		slog.Warn("voice: not connected", "err", err, "retry", backoff)
+		msg := err.Error()
+		c.update(func(s *callState) bool { s.people, s.lostErr = nil, msg; return true })
+		end := time.Now().Add(backoff)
+	wait:
+		for left := time.Until(end); left > 0; left = time.Until(end) {
+			n := int((left + time.Second - 1) / time.Second)
+			c.update(func(s *callState) bool { s.status, s.retryIn, s.canMute = callRetry, n, false; return true })
+			select {
+			case <-ctx.Done():
+				return
+			case j = <-c.joined: // a new token: try it now
+				got = time.Now()
+				break wait
+			case <-time.After(min(left, time.Second)):
+			}
+		}
+		backoff = min(backoff*2, 30*time.Second)
+		if time.Since(got) > tokenFresh && c.rejoin != nil {
+			slog.Info("voice: the token is old; asking for a new join")
+			c.rejoin()
+			j = wire.Joined{}
 		}
 	}
 }
 
 func (c *call) connect(ctx context.Context, j wire.Joined, lost chan error) error {
-	c.update(func(s *callState) bool { s.status, s.detail = callJoining, ""; return true })
+	c.update(func(s *callState) bool { s.status, s.retryIn, s.lostErr = callJoining, 0, ""; return true })
 	ev := rtc.Events{
 		Joined: func(self rtc.Participant, others []rtc.Participant) {
 			c.update(func(s *callState) bool { s.self, s.people = self.Identity, others; return true })
@@ -181,6 +239,22 @@ func (c *call) connect(ctx context.Context, j wire.Joined, lost chan error) erro
 			case lost <- err:
 			default:
 			}
+		},
+		Reconnecting: func() {
+			c.update(func(s *callState) bool {
+				if s.status != callReconnecting {
+					s.before, s.status = s.status, callReconnecting
+				}
+				return true
+			})
+		},
+		Reconnected: func() {
+			c.update(func(s *callState) bool {
+				if s.status == callReconnecting {
+					s.status = s.before
+				}
+				return true
+			})
 		},
 	}
 	room, err := (&lkrtc.Connector{}).Connect(ctx, rtc.Join{URL: j.LiveKitURL, Token: j.Token, Identity: j.Identity}, ev)
@@ -291,6 +365,13 @@ func renderCall(people, mic string) *call {
 		st.status, st.canMute = callListening, false
 	case "lost":
 		st.status, st.canMute = callLost, false
+	case "waiting":
+		st.status, st.canMute = callWaiting, false
+	case "retry":
+		st.status, st.canMute, st.retryIn = callRetry, false, 4
+		st.lostErr = "join the voice room: could not establish signal connection: dial tcp 127.0.0.1:7880: connect: connection refused"
+	case "reconnecting":
+		st.status, st.before = callReconnecting, callOn
 	case "noecho":
 		st.noEcho, st.echoErr = true, "start the audio engine: (1650879860)"
 	}

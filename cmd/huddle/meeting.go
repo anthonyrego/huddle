@@ -14,14 +14,26 @@ import (
 
 // Connection states for the status pill.
 const (
-	connOffline    = "Offline"
-	connNoRoom     = "Not in a room"
-	connJoining    = "Joining…"
-	connConnected  = "Connected"
-	connRetrying   = "Reconnecting…"
-	connFixture    = "Fixture"
-	connFixtureEnd = "Fixture done"
+	connOffline     = "Offline"
+	connNoRoom      = "Not in a room"
+	connJoining     = "Joining…"
+	connConnected   = "Connected"
+	connRetrying    = "Reconnecting…"               // the meeting connection dropped
+	connUnreachable = "Can't reach the server"      // no answer at all
+	connRefused     = "The server didn't let us in" // it answered with an error
+	connFixture     = "Fixture"
+	connFixtureEnd  = "Fixture done"
 )
+
+// connDown is whether a state is the connection failing (a red dot, and
+// the countdown to the next try).
+func connDown(conn string) bool {
+	switch conn {
+	case connRetrying, connUnreachable, connRefused, connOffline:
+		return true
+	}
+	return false
+}
 
 // meeting is the shared state. Every write bumps rev and calls wake.
 type meeting struct {
@@ -35,6 +47,8 @@ type meetingState struct {
 	rev      int
 	conn     string // connection state
 	detail   string // why it's offline, or the server
+	server   string // the server's host, for the bar while it can't be reached
+	retryIn  int    // seconds to the next try while the connection is down
 	room     string
 	identity string
 	// The board: the version shown and the ops that rebuild it. reveal
@@ -76,7 +90,7 @@ func (mt *meeting) take(rev int) (meetingState, bool) {
 }
 
 func (mt *meeting) setConn(conn, detail string) {
-	mt.update(func(s *meetingState) { s.conn, s.detail = conn, detail })
+	mt.update(func(s *meetingState) { s.conn, s.detail, s.retryIn = conn, detail, 0 })
 }
 
 // setVersion shows a version: its whole snapshot at the server's

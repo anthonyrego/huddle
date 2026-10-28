@@ -98,6 +98,9 @@ func deviceRows(devs []audio.VoiceDevice, listErr error, p devicePrefs, st callS
 			rows = append(rows, menuRow{kind: rowNote, label: "No mic: " + st.detail})
 		}
 	}
+	if st.lostErr != "" {
+		rows = append(rows, menuRow{kind: rowNote, label: "Voice: " + st.lostErr})
+	}
 	return rows
 }
 

@@ -85,14 +85,18 @@ func runServe(args []string) error {
 	hub := &wshub.Hub{}
 	// The whiteboard: one agent per active room, when there is a key.
 	var agents *agent.Manager
-	if key := os.Getenv("GEMINI_API_KEY"); key != "" && os.Getenv("HUDDLE_WHITEBOARD") != "0" {
+	key := os.Getenv("GEMINI_API_KEY")
+	switch {
+	case key == "" || os.Getenv("HUDDLE_WHITEBOARD") == "0":
+		slog.Warn("serve: no GEMINI_API_KEY: the whiteboard is off")
+	case md.agent == nil:
+		slog.Warn("serve: the whiteboard is off: it joins builtin media from the media server's step 2", "media", md.kind)
+	default:
 		agents = agent.NewManager(ctx, agent.Config{
 			Store: st, Hub: hub, APIKey: key, Media: md.agent,
 			Voice: os.Getenv("HUDDLE_VOICE"),
 		})
 		defer func() { stop(); agents.Wait() }()
-	} else {
-		slog.Warn("serve: no GEMINI_API_KEY: the whiteboard is off")
 	}
 	hub.Join = func(ctx context.Context, hi wire.Hello) (wire.Welcome, [][]byte, error) {
 		w, frames, err := welcome(ctx, st, hi)

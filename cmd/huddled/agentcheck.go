@@ -177,6 +177,10 @@ func runAgentCheck(args []string) error {
 		return err
 	}
 	defer md.close()
+	if md.agent == nil {
+		ln.Close()
+		return fmt.Errorf("agent-check: the whiteboard can't join %s media yet (the media server's step 2)", md.kind)
+	}
 	rec := &recorder{start: time.Now()}
 	hub := &wshub.Hub{}
 	agents := agent.NewManager(ctx, agent.Config{

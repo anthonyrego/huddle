@@ -117,8 +117,9 @@ network and decoder.
 LiveKit runs as a service of its own, and its SDK stands between us and
 fixes: it pads a track nobody has sent on (new subscribers' jitter buffers
 sat at 300 ms), doesn't expose Dynacast (every layer is sent, watched or
-not), picks the layer below a tile slightly larger than it, and takes about
-1.1 s to a first video frame. So the SFU moves into `huddled serve`, written
+not), and picks the layer below a tile slightly larger than it. (The 1.1 s
+to a first video frame it was blamed for turned out to be our own
+assembler: step 1.) So the SFU moves into `huddled serve`, written
 here on pion and adapted from LiveKit's server and SDK (Apache 2.0: the
 license and NOTICE ship with the code and the app), and our own client
 replaces lksdk behind `rtc.Connector`. LiveKit stays beside it
@@ -153,11 +154,21 @@ replaces lksdk behind `rtc.Connector`. LiveKit stays beside it
     - pion's GCC on the sending side holds a narrow link when what's
       sent follows it, and climbs while less is sent, so the allocation
       caps it.
-- **Step 1, the seams (parallel):**
-  - lkrtc becomes `internal/rtc/room` over a transport interface.
-  - The signalling types, tokens, the dev join's `Media`, bots on the dev
-    join, and the agent's `Media`.
-  - The SFU's skeleton with audio.
+- **Step 1, the seams (done 2026-10-28):**
+  - The /rtc protocol and its tokens on main first, then three worktrees,
+    merged:
+    - lkrtc became `internal/rtc/room`: lksdk only in `lk.go`, behind a
+      transport interface.
+    - The dev join says which media server, the bots join through it,
+      and the whiteboard reaches media through an interface.
+    - The SFU forwards voices with translated sender reports, and
+      `sfuclient.Session` joins it.
+  - `HUDDLE_MEDIA=builtin` runs huddled's SFU, without the whiteboard
+    until step 2.
+  - **Found:** the 1.1 s to a first video frame was the app's assembler.
+    It waited for the first marker, which threw away the keyframe every
+    subscription starts with. Starting at a keyframe's first packet
+    brings it to about 70 ms, through LiveKit too.
 - **Step 2, voice on our SFU:**
   - **Gate:** voice-check within LiveKit's numbers, a new subscriber at
     40 ms from the first second, agent-check unchanged.
@@ -192,6 +203,9 @@ replaces lksdk behind `rtc.Connector`. LiveKit stays beside it
   transcription model takes 16 kHz PCM, returns text, and runs 10-minute
   sessions without speaker labels (each participant's own track gives those).
 - LiveKit's Go SDK takes already-encoded media; its root package needs no cgo.
+- The app's first video frame waits on its own assembler, not the SFU: a
+  subscription starts with a keyframe, and starting a unit at the
+  keyframe's first packet shows it at once.
 - pion's NACK responder makes RTX by copying the original header and never
   writes repaired-rid (interceptor v0.1.47), so a pion SFU can't tell which
   simulcast layer an RTX stream repairs; without RTX it resends on the

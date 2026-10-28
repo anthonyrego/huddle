@@ -21,8 +21,9 @@ type Network struct {
 	// Port is the UDP port (0: a free one, as tests want).
 	Port int
 	// IP, when set, is the one address candidates are offered on: this
-	// Mac's LAN address (make server passes LAN_IP). Empty: every address
-	// but those of virtual interfaces (VPN tunnels, AirDrop, bridges).
+	// Mac's LAN address (make server passes LAN_IP), or 127.0.0.1 for
+	// everything on one Mac. Empty: every address but those of virtual
+	// interfaces (VPN tunnels, AirDrop, bridges).
 	IP string
 	// External, when set, is offered in place of the address: what a NAT
 	// in front of the server forwards the port from.
@@ -61,6 +62,9 @@ type network struct {
 }
 
 func listen(cfg Network) (*network, error) {
+	if ip := net.ParseIP(cfg.IP); ip != nil && ip.IsLoopback() {
+		cfg.Loopback = true
+	}
 	keepIP := func(ip net.IP) bool {
 		if ip.IsLoopback() {
 			return cfg.Loopback

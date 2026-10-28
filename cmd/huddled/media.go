@@ -19,6 +19,7 @@ import (
 	"github.com/anthonyrego/huddle/internal/server/httpapi"
 	"github.com/anthonyrego/huddle/internal/server/lktoken"
 	"github.com/anthonyrego/huddle/internal/server/rtctoken"
+	"github.com/anthonyrego/huddle/internal/server/sfu"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
 
@@ -35,6 +36,7 @@ type media struct {
 	lk     lktoken.Minter  // LiveKit's tokens (LIVEKIT_API_KEY and _SECRET)
 	tokens rtctoken.Minter // the builtin SFU's tokens (HUDDLE_RTC_SECRET)
 	rtc    http.Handler    // the builtin SFU's signalling, at /rtc
+	sfu    *sfu.Server     // the builtin SFU
 
 	agent agent.Media
 	close func()
@@ -69,11 +71,16 @@ func newMedia(addr string) (*media, error) {
 			return nil, err
 		}
 		m.tokens = rtctoken.Minter{Secret: secret, TTL: 10 * time.Minute}
-		// The SFU (internal/server/sfu) is media server step 1c's. It goes
-		// here: listening on m.nodeIP and UDP m.port, checking m.tokens,
-		// serving m.rtc, giving the whiteboard its in-process m.agent, and
-		// closed by m.close.
-		return nil, errors.New("HUDDLE_MEDIA=builtin needs the SFU (media server step 1c), which isn't in this build yet")
+		srv, err := sfu.New(sfu.Config{Network: sfu.Network{Port: m.port, IP: m.nodeIP}, Tokens: m.tokens})
+		if err != nil {
+			return nil, err
+		}
+		m.rtc, m.sfu = srv, srv
+		m.close = func() { srv.Close() }
+		// The whiteboard joins huddled's SFU in-process in the media
+		// server's step 2 (m.agent); until then a builtin server runs
+		// without it.
+		return m, nil
 	default:
 		return nil, fmt.Errorf("HUDDLE_MEDIA is %q: livekit or builtin", m.kind)
 	}
@@ -108,5 +115,9 @@ func (m *media) attrs() []any {
 	if m.kind == wire.MediaLiveKit {
 		return append(a, "livekit", m.lkURL)
 	}
-	return append(a, "mediaPort", m.port)
+	a = append(a, "mediaPort", m.port)
+	if m.sfu != nil {
+		a = append(a, "mediaAddrs", m.sfu.Addrs())
+	}
+	return a
 }

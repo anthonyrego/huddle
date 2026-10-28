@@ -84,3 +84,46 @@ func TestAnnexB(t *testing.T) {
 		t.Fatal("a short unit passed")
 	}
 }
+
+// shrink scales a frame down by k with a box filter (as a simulcast
+// layer's encoder would).
+func shrink(f Frame, k int) Frame {
+	g := NewFrame(f.W/k, f.H/k)
+	for y := range g.H {
+		for x := range g.W {
+			sum := 0
+			for dy := range k {
+				for dx := range k {
+					sum += int(f.Y[(y*k+dy)*f.YStride+x*k+dx])
+				}
+			}
+			g.Y[y*g.YStride+x] = byte(sum / (k * k))
+		}
+	}
+	for i := range g.UV {
+		g.UV[i] = 128
+	}
+	return g
+}
+
+// TestReadScaled: the barcode and the flash read on a layer scaled down
+// from the size they were drawn at.
+func TestReadScaled(t *testing.T) {
+	for _, size := range [][2]int{{1280, 720}, {1920, 1080}, {640, 360}} {
+		f := NewFrame(size[0], size[1])
+		Draw(&f, 123456, true)
+		for _, k := range []int{2, 4} {
+			g := shrink(f, k)
+			if n, ok := ReadCode(g); !ok || n != 123456 {
+				t.Errorf("%dx%d shrunk %d×: reads %d (%v)", size[0], size[1], k, n, ok)
+			}
+			if !Flash(g) {
+				t.Errorf("%dx%d shrunk %d×: no flash", size[0], size[1], k)
+			}
+		}
+		Draw(&f, 7, false)
+		if Flash(shrink(f, 4)) {
+			t.Errorf("%dx%d: a flash that isn't", size[0], size[1])
+		}
+	}
+}

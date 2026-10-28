@@ -106,7 +106,12 @@ func fill(f *Frame, x, y, w, h int, v byte) {
 
 // mean is the average brightness of the middle half of a rectangle.
 func mean(f Frame, x, y, w, h int) float64 {
-	x0, y0, x1, y1 := x+w/4, y+h/4, x+w*3/4, y+h*3/4
+	return meanF(f, float64(x), float64(y), float64(w), float64(h))
+}
+
+// meanF is mean on a rectangle with fractional corners.
+func meanF(f Frame, x, y, w, h float64) float64 {
+	x0, y0, x1, y1 := int(x+w/4), int(y+h/4), int(x+w*3/4), int(y+h*3/4)
 	var sum, n int
 	for r := y0; r < y1 && r < f.H; r++ {
 		for c := x0; c < x1 && c < f.W; c++ {
@@ -121,12 +126,35 @@ func mean(f Frame, x, y, w, h int) float64 {
 }
 
 // ReadCode reads the frame number from a pattern frame; false when the
-// barcode isn't there or doesn't check.
+// barcode isn't there or doesn't check. A frame scaled down to a half or
+// a quarter of the size it was drawn at (a simulcast layer) reads too:
+// its cells are the drawn size's, scaled, which rounding can make
+// differ from cellSize at the smaller width.
 func ReadCode(f Frame) (uint32, bool) {
-	c := cellSize(f.W)
+	for _, c := range cellSizes(f.W) {
+		if n, ok := readCode(f, c); ok {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// cellSizes are the cell sizes a frame w wide may carry: drawn at w, or
+// at twice or four times w and scaled down.
+func cellSizes(w int) []float64 {
+	out := []float64{float64(cellSize(w))}
+	for _, k := range []int{2, 4} {
+		if c := float64(cellSize(w*k)) / float64(k); c != out[len(out)-1] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func readCode(f Frame, c float64) (uint32, bool) {
 	var b [cells]bool
 	for i := range b {
-		b[i] = mean(f, (2+i)*c, c, c, c) > (black+white)/2
+		b[i] = meanF(f, float64(2+i)*c, c, c, c) > (black+white)/2
 	}
 	if !b[0] || b[1] || !b[2] || b[3] {
 		return 0, false
@@ -146,10 +174,18 @@ func ReadCode(f Frame) (uint32, bool) {
 	return n, chk == check(n)
 }
 
-// Flash reports whether a pattern frame's flash patch is lit.
+// Flash reports whether a pattern frame's flash patch is lit (at the
+// cell size its barcode reads at).
 func Flash(f Frame) bool {
-	c := cellSize(f.W)
-	return mean(f, f.W-6*c, f.H-6*c, 4*c, 4*c) > (black+white)/2
+	c := float64(cellSize(f.W))
+	for _, cc := range cellSizes(f.W) {
+		if _, ok := readCode(f, cc); ok {
+			c = cc
+			break
+		}
+	}
+	w, h := float64(f.W), float64(f.H)
+	return meanF(f, w-6*c, h-6*c, 4*c, 4*c) > (black+white)/2
 }
 
 // PSNR compares two frames of one size, brightness and colour separately,

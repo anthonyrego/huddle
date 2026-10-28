@@ -263,13 +263,15 @@ func (b *Buffer) Pull(out []float32) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	marked := false
+	var ts int64
+	var at time.Time
 	for filled := 0; filled < len(out); {
 		if !b.started && !b.start() {
 			clear(out[filled:])
 			return
 		}
 		if !marked {
-			b.playingTS, b.playingAt, marked = b.playTS, time.Now(), true
+			ts, at, marked = b.playTS, time.Now(), true
 		}
 		if len(b.pending) > 0 {
 			k := copy(out[filled:], b.pending)
@@ -282,6 +284,11 @@ func (b *Buffer) Pull(out []float32) {
 			b.underrun(out[filled:])
 			return
 		}
+	}
+	// Through DTX silence the position stands still (and jumps at the next
+	// talk spurt), so only a pull of the stream itself says where it is.
+	if !b.inDTX {
+		b.playingTS, b.playingAt = ts, at
 	}
 }
 
@@ -449,9 +456,11 @@ func (b *Buffer) Stats() Stats {
 	return s
 }
 
-// Playing is where the last pull began: the RTP timestamp of the first
-// sample it took, and when. ok is false before the stream has started
-// playing. A video track holds its frames against this (lip sync).
+// Playing is where the last pull of the stream itself (not an underrun,
+// not DTX silence) began: the RTP timestamp of the first sample it took,
+// and when. ok is false before the stream has started playing. A video
+// track holds its frames against this (lip sync), going on from it on the
+// wall clock through silences.
 func (b *Buffer) Playing() (ts uint32, at time.Time, ok bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

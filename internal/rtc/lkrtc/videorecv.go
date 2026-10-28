@@ -27,9 +27,10 @@ const (
 	// maxHold is the longest a frame waits for its audio; a frame further
 	// ahead than that is shown at once (the clocks disagree).
 	maxHold = 500 * time.Millisecond
-	// audioStale is how long since the audio was last pulled that it no
+	// audioStale is how long since the audio last played (not counting
+	// silences, which it goes on through on the wall clock) that it no
 	// longer counts as playing.
-	audioStale = 200 * time.Millisecond
+	audioStale = 10 * time.Second
 )
 
 // videoTrack is one remote camera or screen (rtc.VideoTrack).

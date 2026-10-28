@@ -1,0 +1,28 @@
+# The local dev stack: Postgres for the server. An S3 stand-in joins in
+# stage 4 (recordings); MinIO no longer publishes community images.
+# LiveKit runs natively (make livekit), so its UDP ports and the address it
+# advertises need no Docker NAT.
+#
+# Dev credentials only; never reuse them anywhere real.
+name: huddle
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: huddle
+      POSTGRES_PASSWORD: huddle
+      POSTGRES_DB: huddle
+    ports:
+      - "127.0.0.1:5442:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/dev-db-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U huddle"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:

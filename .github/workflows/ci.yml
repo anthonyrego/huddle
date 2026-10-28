@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test ./...
+      - run: ./scripts/check-shaders.sh
+      - run: ./scripts/check-nocgo.sh
+      - run: CGO_ENABLED=0 go build -o build/huddle ./cmd/huddle
+
+  # The server and the pure packages, with the store's tests against a real
+  # Postgres. The app is macOS-only for now, but it still builds here.
+  linux:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: huddle
+          POSTGRES_PASSWORD: huddle
+          POSTGRES_DB: huddle_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U huddle"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test ./...
+        env:
+          HUDDLE_TEST_DATABASE_URL: postgres://huddle:huddle@localhost:5432/huddle_test?sslmode=disable
+      - run: CGO_ENABLED=0 go build -o build/huddled ./cmd/huddled

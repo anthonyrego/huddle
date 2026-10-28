@@ -1,0 +1,15 @@
+# Copy to local.mk (git ignores it). Machine-specific settings the
+# Makefile includes when present.
+
+# The codesigning certificate's SHA-1 (security find-identity -v -p codesigning).
+# A "Developer ID Application" certificate signs builds you can notarize and
+# copy to another Mac. Unset, builds are signed ad hoc.
+# SIGN = 0123456789ABCDEF0123456789ABCDEF01234567
+
+# A notarytool keychain profile (xcrun notarytool store-credentials NAME).
+# NOTARY_PROFILE = huddle
+
+# Or an App Store Connect API key (.p8) instead of a keychain profile.
+# NOTARY_KEY_FILE = /path/to/AuthKey_XXXXXXXXXX.p8
+# NOTARY_KEY_ID = XXXXXXXXXX
+# NOTARY_ISSUER = 00000000-0000-0000-0000-000000000000

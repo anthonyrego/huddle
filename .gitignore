@@ -1,0 +1,7 @@
+/build/
+/.dev/
+/.env
+/local.mk
+/testdata/meetings/*.ogg
+/testdata/meetings/*.wav
+.DS_Store

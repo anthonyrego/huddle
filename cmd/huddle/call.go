@@ -23,6 +23,7 @@ import (
 	"github.com/anthonyrego/huddle/internal/playout"
 	"github.com/anthonyrego/huddle/internal/rtc"
 	"github.com/anthonyrego/huddle/internal/rtc/lkrtc"
+	"github.com/anthonyrego/huddle/internal/video"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
 
@@ -50,6 +51,9 @@ type call struct {
 	data    string // where devices.json is kept ("" keeps nothing)
 	// rejoin asks the connection for a fresh join (conn.rejoin).
 	rejoin func()
+	// noVideo never opens the camera or the share (agents' runs);
+	// fakeCamera makes both the test pattern.
+	noVideo, fakeCamera bool
 
 	mu       sync.Mutex
 	st       callState
@@ -258,13 +262,23 @@ func (c *call) connect(ctx context.Context, j wire.Joined, lost chan error) erro
 			})
 		},
 	}
-	room, err := (&lkrtc.Connector{}).Connect(ctx, rtc.Join{URL: j.LiveKitURL, Token: j.Token, Identity: j.Identity}, ev)
+	c.mu.Lock()
+	gen := c.vid.roomGen
+	c.mu.Unlock()
+	c.videoEvents(&ev, gen)
+	conn := &lkrtc.Connector{
+		NewDecoder: videoDecoder,
+		// A remote video's new frame is something to draw.
+		VideoFrame: func(rtc.VideoTrack, video.Frame, lkrtc.VideoFrameInfo) { c.wakeUp() },
+	}
+	room, err := conn.Connect(ctx, rtc.Join{URL: j.LiveKitURL, Token: j.Token, Identity: j.Identity}, ev)
 	if err != nil {
 		return err
 	}
 	c.mu.Lock()
 	c.room = room
 	c.mu.Unlock()
+	c.publishVideo(room)
 	// The devices open only once the room is joined. The room publishes the
 	// mic for the whole call (silence while there's none) unless -no-voice.
 	c.switchMu.Lock()
@@ -347,6 +361,7 @@ func (c *call) hangUp() {
 	c.mu.Unlock()
 	if room != nil {
 		room.Leave()
+		c.leftVideo()
 	}
 	if dev != nil {
 		dev.Close()

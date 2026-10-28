@@ -3,6 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/binary"
+	"errors"
+	"net"
+	"strings"
 	"time"
 
 	"github.com/pion/opus"
@@ -29,10 +32,23 @@ const (
 	prerollMs   = 300
 	vadLevel    = -45.0 // dBFS
 	vadHangover = 450 * time.Millisecond
+	vadAttack   = 60 * time.Millisecond // a click or a peak of noise isn't speech
 	rotateAfter = 8 * time.Minute
 	hardRotate  = 9*time.Minute + 30*time.Second
 	idleClose   = 40 * time.Second // the service aborts a session after about a minute without audio
-	finalWait   = 2500 * time.Millisecond
+	quietTick   = 100 * time.Millisecond
+	silenceDB   = -100.0
+	// finalWait is how long an utterance's final transcript is waited for
+	// after the stream end. It usually comes in about 0.3 s, but now and
+	// then the service takes several seconds, and a session sent the next
+	// utterance meanwhile folds both into one final. So the next utterance
+	// waits for this one's final, and when it doesn't come in time the
+	// last interim stands in for it and the next utterance gets a fresh
+	// session.
+	finalWait = 4 * time.Second
+	// noWordsWait is the wait instead when no interim had words: a cough or
+	// a noise gets no final, and the next utterance shouldn't wait 4 s on it.
+	noWordsWait = time.Second
 )
 
 // audioMsg is a stretch of one person's speech for their transcriber.
@@ -57,9 +73,11 @@ func (a *Agent) listen(ctx context.Context, track *webrtc.TrackRemote, identity,
 	go a.transcribe(tctx, identity, name, audio)
 	defer close(audio)
 
-	vad := pcm.Detector{Threshold: vadLevel, Hangover: vadHangover}
+	vad := pcm.Detector{Threshold: vadLevel, Hangover: vadHangover, Attack: vadAttack}
 	samples := make([]int16, 2880)
 	var pre, chunk []byte
+	var loudest, quietest float64 // levels within the utterance, for the log
+	var uttAt time.Time
 	frame := make([]byte, 0, 1920)
 	send := func(m audioMsg) {
 		select {
@@ -68,9 +86,30 @@ func (a *Agent) listen(ctx context.Context, track *webrtc.TrackRemote, identity,
 			a.log.Warn("agent: transcriber behind; dropping audio", "identity", identity)
 		}
 	}
+	end := func(at, now time.Time) {
+		send(audioMsg{pcm: append([]byte(nil), chunk...), end: true, at: at})
+		chunk = chunk[:0]
+		a.log.Info("agent: speech", "identity", identity, "length", at.Sub(uttAt).Round(10*time.Millisecond),
+			"loudestDB", int(loudest), "quietestDB", int(quietest), "endedAfter", now.Sub(at).Round(10*time.Millisecond))
+	}
 	for {
+		track.SetReadDeadline(time.Now().Add(quietTick))
 		pkt, _, err := track.ReadRTP()
 		if err != nil {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				// Nothing came: a sender in DTX sends one packet every
+				// 400 ms, and a muted one none. The time going by is quiet,
+				// so the end of speech is found on time, not at the next
+				// packet.
+				if vad.Speaking() {
+					now := time.Now()
+					if edge, at := vad.Feed(silenceDB, now); edge == pcm.End {
+						end(at, now)
+					}
+				}
+				continue
+			}
 			a.log.Info("agent: track ended", "identity", identity, "err", err)
 			return
 		}
@@ -86,11 +125,16 @@ func (a *Agent) listen(ctx context.Context, track *webrtc.TrackRemote, identity,
 		for _, s := range samples[:n] {
 			frame = binary.LittleEndian.AppendUint16(frame, uint16(s))
 		}
-		edge, at := vad.Feed(pcm.Level(frame), now)
+		level := pcm.Level(frame)
+		edge, at := vad.Feed(level, now)
+		if vad.Speaking() || edge == pcm.End {
+			loudest, quietest = max(loudest, level), min(quietest, level)
+		}
 		switch {
 		case edge == pcm.Start:
 			msg := audioMsg{pcm: append(append([]byte(nil), pre...), frame...), start: true, at: now}
 			pre, chunk = pre[:0], chunk[:0]
+			uttAt, loudest, quietest = now, level, level
 			send(msg)
 		case vad.Speaking():
 			chunk = append(chunk, frame...)
@@ -99,8 +143,7 @@ func (a *Agent) listen(ctx context.Context, track *webrtc.TrackRemote, identity,
 				chunk = chunk[:0]
 			}
 		case edge == pcm.End:
-			send(audioMsg{pcm: append([]byte(nil), chunk...), end: true, at: at})
-			chunk = chunk[:0]
+			end(at, now)
 		default:
 			pre = append(pre, frame...)
 			if keep := prerollMs * earRate * 2 / 1000; len(pre) > keep {
@@ -137,6 +180,8 @@ func (a *Agent) transcribe(ctx context.Context, identity, name string, audio <-c
 	var deadline time.Time
 	speaking := false
 	var interimAt time.Time
+	var interim string // the utterance's latest interim transcript
+	var words bool     // an interim of this utterance had words
 	defer func() {
 		if sess != nil {
 			sess.Close()
@@ -148,6 +193,7 @@ func (a *Agent) transcribe(ctx context.Context, identity, name string, audio <-c
 			a.trace(Event{Kind: EvRotate, Speaker: name})
 		}
 		cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		t0 := time.Now()
 		s, err := live.Connect(cctx, a.cfg.APIKey, live.Config{Model: a.cfg.EarModel, Text: true})
 		cancel()
 		if err != nil {
@@ -157,8 +203,15 @@ func (a *Agent) transcribe(ctx context.Context, identity, name string, audio <-c
 			return
 		}
 		sess, opened = s, time.Now()
+		a.log.Info("agent: transcriber open", "identity", identity, "took", time.Since(t0).Round(time.Millisecond))
 	}
+	var endSent time.Time // when the last audioStreamEnd went
 	final := func(text string) {
+		after := time.Duration(0)
+		if !endSent.IsZero() {
+			after = time.Since(endSent).Round(10 * time.Millisecond)
+		}
+		a.log.Info("agent: heard", "identity", identity, "afterEnd", after, "speaking", speaking, "text", text)
 		end := uttEnd
 		if speaking || end < segStart {
 			end = a.now()
@@ -176,10 +229,15 @@ func (a *Agent) transcribe(ctx context.Context, identity, name string, audio <-c
 		} else {
 			events = nil
 		}
+		// The next utterance waits for this one's final (finalWait).
+		in := audio
+		if awaiting {
+			in = nil
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case m, ok := <-audio:
+		case m, ok := <-in:
 			if !ok {
 				return
 			}
@@ -192,7 +250,7 @@ func (a *Agent) transcribe(ctx context.Context, identity, name string, audio <-c
 				if sess == nil || time.Since(opened) > rotateAfter {
 					open()
 				}
-				speaking = true
+				speaking, interim, words = true, "", false
 				uttStart = a.ms(m.at) - prerollMs
 				segStart = uttStart
 				// The gate hears speech start before any words.
@@ -209,7 +267,12 @@ func (a *Agent) transcribe(ctx context.Context, identity, name string, audio <-c
 				speaking = false
 				uttEnd = a.ms(m.at)
 				sess.SendAudioEnd()
-				awaiting, deadline = true, time.Now().Add(finalWait)
+				endSent = time.Now()
+				wait := noWordsWait
+				if words {
+					wait = finalWait
+				}
+				awaiting, deadline = true, time.Now().Add(wait)
 			} else if time.Since(opened) > hardRotate {
 				// Ten minutes is the session's limit: end the utterance here,
 				// take its final from the old session, go on in a new one.
@@ -231,6 +294,8 @@ func (a *Agent) transcribe(ctx context.Context, identity, name string, audio <-c
 			}
 			switch ev.Kind {
 			case live.InterimText:
+				interim = ev.Text
+				words = words || strings.TrimSpace(ev.Text) != ""
 				if time.Since(interimAt) < 250*time.Millisecond {
 					continue
 				}
@@ -239,7 +304,7 @@ func (a *Agent) transcribe(ctx context.Context, identity, name string, audio <-c
 				a.post(func() { a.onSegment(g) })
 			case live.InputText:
 				final(ev.Text)
-				awaiting = false
+				awaiting, interim = false, ""
 			case live.Usage:
 				if u := ev.Usage; u != nil {
 					a.trace(Event{Kind: EvUsage, N: int(u.PromptTokenCount), Detail: "ear prompt"})
@@ -247,8 +312,16 @@ func (a *Agent) transcribe(ctx context.Context, identity, name string, audio <-c
 			}
 		case <-tick.C:
 			if awaiting && time.Now().After(deadline) {
-				final("")
-				awaiting = false
+				// No final: a noise has none. When there were words it's late:
+				// the interim stands in, and the session, which would fold this
+				// utterance into the next one's final, is let go.
+				final(interim)
+				if words && sess != nil {
+					a.log.Warn("agent: final transcript late; using the interim", "identity", identity, "waited", finalWait)
+					sess.Close()
+					sess = nil
+				}
+				awaiting, interim = false, ""
 			}
 			if sess != nil && !speaking && !awaiting && time.Since(lastAudio) > idleClose {
 				sess.Close()

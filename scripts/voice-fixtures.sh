@@ -44,4 +44,20 @@ pause 2 "$tmp/dp.wav"
 printf "file '%s'\n" "$tmp/d.wav" "$tmp/dp.wav" >"$tmp/d.txt"
 ffmpeg -loglevel error -y -f concat -safe 0 -i "$tmp/d.txt" -c:a libopus -b:a 32k -frame_duration 20 -application voip "$dir/daniel.ogg"
 
+# Commands to the whiteboard with pauses between, over a little room noise,
+# for the ears through the app's own mic path (huddle voice -in): AGENTS.md,
+# "The ears".
+line Daniel "Whiteboard, add a box called build." "$tmp/c1.wav"
+line Daniel "I think we should ship on Friday." "$tmp/c2.wav"
+line Daniel "Whiteboard, add a box called test after build." "$tmp/c3.wav"
+line Daniel "Whiteboard, what is on the board right now?" "$tmp/c4.wav"
+pause 2 "$tmp/c0.wav"
+pause 4 "$tmp/cp4.wav"
+pause 3 "$tmp/cp3.wav"
+pause 6 "$tmp/cp6.wav"
+printf "file '%s'\n" "$tmp/c0.wav" "$tmp/c1.wav" "$tmp/cp4.wav" "$tmp/c2.wav" "$tmp/cp3.wav" "$tmp/c3.wav" "$tmp/cp4.wav" "$tmp/c4.wav" "$tmp/cp6.wav" >"$tmp/c.txt"
+ffmpeg -loglevel error -y -f concat -safe 0 -i "$tmp/c.txt" -c:a pcm_s16le "$tmp/clean.wav"
+ffmpeg -loglevel error -y -i "$tmp/clean.wav" -f lavfi -i "anoisesrc=color=pink:amplitude=0.003:r=48000" \
+	-filter_complex "[0][1]amix=inputs=2:duration=first:normalize=0" -ar 48000 -ac 1 -c:a pcm_s16le "$dir/commands.wav"
+
 ls -l "$dir"

@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/anthonyrego/huddle/internal/config"
+	"github.com/anthonyrego/huddle/internal/logx"
 	"github.com/anthonyrego/huddle/internal/server/agent"
 	"github.com/anthonyrego/huddle/internal/server/httpapi"
 	"github.com/anthonyrego/huddle/internal/server/lktoken"
@@ -50,7 +52,16 @@ func runServe(args []string) error {
 	if dbURL == "" || lkURL == "" || minter.Key == "" || minter.Secret == "" {
 		return errors.New("set DATABASE_URL, LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET (make server does)")
 	}
+	// Logs go to stderr; a dev server (HUDDLE_DATA_DIR set, as make server
+	// does) also keeps them in <data>/logs/serve.log, where agents read them.
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if os.Getenv("HUDDLE_DATA_DIR") != "" {
+		if paths, err := config.Resolve(); err == nil {
+			if f, err := logx.Setup(paths.Logs, "serve", true); err == nil {
+				defer f.Close()
+			}
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

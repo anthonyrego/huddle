@@ -196,8 +196,19 @@ func TestTypedAndKey(t *testing.T) {
 	if cmds[1].Source != Key || cmds[1].Text != "Add a step called review." || cmds[1].AtMs > 3300 {
 		t.Fatalf("key = %+v", cmds[1])
 	}
+	// A late final (the ears wait up to 4 s past the end of speech) still
+	// makes the command.
+	cmds, _ = run(t, []ev{
+		{at: 1000, who: "bob", key: 1},
+		{at: 1100, who: "bob", text: "~", start: 1000},
+		{at: 2600, who: "bob", key: -1},
+		{at: 7000, who: "bob", text: "Add a list to the decisions.", start: 1000},
+	}, 9000)
+	if len(cmds) != 1 || cmds[0].Text != "Add a list to the decisions." {
+		t.Fatalf("late final: %+v", cmds)
+	}
 	// The key with nothing said: dropped after the grace.
-	cmds, outs := run(t, []ev{{at: 1000, who: "bob", key: 1}, {at: 1500, who: "bob", key: -1}}, 5000)
+	cmds, outs := run(t, []ev{{at: 1000, who: "bob", key: 1}, {at: 1500, who: "bob", key: -1}}, 8000)
 	if len(cmds) != 0 || outs[len(outs)-1].Kind != Dropped {
 		t.Fatalf("outs = %+v", outs)
 	}

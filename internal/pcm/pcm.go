@@ -63,26 +63,39 @@ const (
 type Detector struct {
 	Threshold float64       // dBFS at or above which a chunk counts as speech
 	Hangover  time.Duration // quiet this long ends speech
+	// Attack is how long chunks must stay loud, with no quiet one between,
+	// before speech starts: a click or a peak of noise isn't speech. Zero
+	// starts on the first loud chunk.
+	Attack time.Duration
 
-	speaking bool
-	lastLoud time.Time
+	speaking  bool
+	lastLoud  time.Time
+	firstLoud time.Time // the start of the current run of loud chunks (not speaking)
 }
 
 // Speaking reports whether the detector is inside an utterance.
 func (d *Detector) Speaking() bool { return d.speaking }
 
 // Feed takes the level of the chunk that ended at now. It returns Start at
-// now when speech begins, and End with the time of the last loud chunk once
+// now when speech begins (Attack after the first loud chunk of
+// the run), and End with the time of the last loud chunk once
 // Hangover of quiet has passed.
 func (d *Detector) Feed(level float64, now time.Time) (Edge, time.Time) {
 	if level >= d.Threshold {
 		d.lastLoud = now
 		if !d.speaking {
-			d.speaking = true
+			if d.firstLoud.IsZero() {
+				d.firstLoud = now
+			}
+			if now.Sub(d.firstLoud) < d.Attack {
+				return None, time.Time{}
+			}
+			d.speaking, d.firstLoud = true, time.Time{}
 			return Start, now
 		}
 		return None, time.Time{}
 	}
+	d.firstLoud = time.Time{}
 	if d.speaking && now.Sub(d.lastLoud) >= d.Hangover {
 		d.speaking = false
 		return End, d.lastLoud

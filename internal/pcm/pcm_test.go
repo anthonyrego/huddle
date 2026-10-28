@@ -72,3 +72,27 @@ func TestDetectorHangover(t *testing.T) {
 		t.Fatal("still speaking after End")
 	}
 }
+
+func TestDetectorAttack(t *testing.T) {
+	d := Detector{Threshold: -45, Hangover: 450 * time.Millisecond, Attack: 60 * time.Millisecond}
+	t0 := time.Unix(0, 0)
+	at := func(ms int) time.Time { return t0.Add(time.Duration(ms) * time.Millisecond) }
+	// A 40 ms peak between quiet chunks isn't speech.
+	for _, c := range []struct {
+		ms    int
+		level float64
+	}{{0, -60}, {20, -42}, {40, -42}, {60, -60}, {80, -42}, {100, -60}} {
+		if e, _ := d.Feed(c.level, at(c.ms)); e != None || d.Speaking() {
+			t.Fatalf("a short peak started speech at %d ms", c.ms)
+		}
+	}
+	// 60 ms of loud chunks is.
+	d.Feed(-20, at(200))
+	d.Feed(-20, at(220))
+	if e, _ := d.Feed(-20, at(240)); e != None {
+		t.Fatalf("started after 40 ms: %v", e)
+	}
+	if e, when := d.Feed(-20, at(260)); e != Start || !when.Equal(at(260)) {
+		t.Fatalf("60 ms loud gave %v at %v", e, when)
+	}
+}

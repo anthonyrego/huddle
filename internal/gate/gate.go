@@ -42,7 +42,9 @@ type Config struct {
 	// waits for the command.
 	WakeOnlyMs int64
 	// KeyGraceMs is how long after the push-to-address key is let go the
-	// transcript of what was said while it was held may still arrive.
+	// transcript of what was said while it was held may still arrive. It
+	// covers the ears' wait for a late final (4 s after the speech ends,
+	// which is about half a second after the key is let go).
 	KeyGraceMs int64
 }
 
@@ -57,7 +59,7 @@ func (c *Config) defaults() {
 		c.WakeOnlyMs = 4000
 	}
 	if c.KeyGraceMs == 0 {
-		c.KeyGraceMs = 2500
+		c.KeyGraceMs = 5000
 	}
 }
 

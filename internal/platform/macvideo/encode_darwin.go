@@ -49,7 +49,7 @@ type Encoder struct {
 
 	mu      sync.Mutex
 	seq     uint64
-	sent    map[uint64]time.Time
+	sent    map[uint64]sentFrame
 	dropped int
 }
 
@@ -87,7 +87,7 @@ func NewEncoder(cfg EncoderConfig, out func(Encoded)) (*Encoder, error) {
 	if cfg.KeyEvery == 0 {
 		cfg.KeyEvery = 2 * time.Second
 	}
-	e := &Encoder{cfg: cfg, out: out, sent: map[uint64]time.Time{}}
+	e := &Encoder{cfg: cfg, out: out, sent: map[uint64]sentFrame{}}
 	encoders.Lock()
 	encoders.next++
 	e.id = encoders.next
@@ -178,7 +178,7 @@ func (e *Encoder) Encode(b *Buffer, pts time.Duration, forceKey bool) error {
 	e.mu.Lock()
 	e.seq++
 	seq := e.seq
-	e.sent[seq] = time.Now()
+	e.sent[seq] = sentFrame{time.Now(), pts}
 	e.mu.Unlock()
 	t := cmTime{Value: pts.Microseconds(), Timescale: 1_000_000, Flags: cmTimeValid}
 	d := cmTime{Value: int64(1_000_000 / e.cfg.FPS), Timescale: 1_000_000, Flags: cmTimeValid}
@@ -235,7 +235,7 @@ func encodeOutput(refcon, frameRef uintptr, status int32, flags uint32, sbuf uin
 		return
 	}
 	e.mu.Lock()
-	at, ok := e.sent[uint64(frameRef)]
+	sf, ok := e.sent[uint64(frameRef)]
 	delete(e.sent, uint64(frameRef))
 	e.mu.Unlock()
 	if status != 0 || sbuf == 0 || flags&infoFrameDropped != 0 {
@@ -254,7 +254,7 @@ func encodeOutput(refcon, frameRef uintptr, status int32, flags uint32, sbuf uin
 	}
 	enc := Encoded{Data: au, Key: key, Seq: uint64(frameRef)}
 	if ok {
-		enc.Took = time.Since(at)
+		enc.Took, enc.PTS = time.Since(sf.at), sf.pts
 	}
 	e.out(enc)
 }
@@ -306,3 +306,12 @@ func annexB(sbuf uintptr, key bool) ([]byte, error) {
 	}
 	return video.AVCCToAnnexB(out, avcc)
 }
+
+// sentFrame is a frame handed to the encoder: when, and its pts.
+type sentFrame struct {
+	at  time.Time
+	pts time.Duration
+}
+
+// Size is the size the encoder makes.
+func (e *Encoder) Size() (w, h int) { return e.cfg.W, e.cfg.H }

@@ -123,3 +123,73 @@ func (s *Scaler) Close() {
 		s.s = 0
 	}
 }
+
+// Edit calls fn with the buffer's planes as a frame to write into, locked
+// for writing; fn must not keep them.
+func (b *Buffer) Edit(fn func(f video.Frame)) error {
+	y, uv, ys, uvs, unlock, err := b.planes(0)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	w, h := b.Size()
+	fn(video.Frame{W: w, H: h, Y: y, UV: uv, YStride: ys, UVStride: uvs})
+	return nil
+}
+
+// View calls fn with the buffer's planes as a frame, locked for reading;
+// fn must not keep them.
+func (b *Buffer) View(fn func(f video.Frame)) error {
+	y, uv, ys, uvs, unlock, err := b.planes(lockReadOnly)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	w, h := b.Size()
+	fn(video.Frame{W: w, H: h, Y: y, UV: uv, YStride: ys, UVStride: uvs})
+	return nil
+}
+
+// Retain takes another reference: the copy is released on its own.
+func (b *Buffer) Retain() *Buffer { return retainBuffer(b.ref) }
+
+// Pool hands out NV12 buffers of one size, recycled once released.
+type Pool struct {
+	ref  uintptr
+	w, h int
+}
+
+// NewPool makes a pool of w×h NV12 buffers backed by IOSurfaces.
+func NewPool(w, h int) (*Pool, error) {
+	if err := load(); err != nil {
+		return nil, err
+	}
+	attrs := cfDict(
+		k("kCVPixelBufferPixelFormatTypeKey"), cfInt(int64(formatNV12)),
+		k("kCVPixelBufferWidthKey"), cfInt(int64(w)),
+		k("kCVPixelBufferHeightKey"), cfInt(int64(h)),
+		k("kCVPixelBufferIOSurfacePropertiesKey"), cfDict())
+	defer cf.release(attrs)
+	p := &Pool{w: w, h: h}
+	if err := check("CVPixelBufferPoolCreate", cv.poolCreate(0, 0, attrs, &p.ref)); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// Get is a buffer from the pool.
+func (p *Pool) Get() (*Buffer, error) {
+	var ref uintptr
+	if err := check("CVPixelBufferPoolCreatePixelBuffer", cv.poolCreateBuf(0, p.ref, &ref)); err != nil {
+		return nil, err
+	}
+	return &Buffer{ref}, nil
+}
+
+// Close lets the pool go (buffers out of it stay valid until released).
+func (p *Pool) Close() {
+	if p.ref != 0 {
+		cf.release(p.ref)
+		p.ref = 0
+	}
+}

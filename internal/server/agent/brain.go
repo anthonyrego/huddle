@@ -164,7 +164,7 @@ func (a *Agent) startTurn(ctx context.Context, q queued) {
 	now := a.now()
 	var recent []store.Segment
 	for _, s := range a.segs {
-		if s.EndMs > a.lastTurn {
+		if s.EndMs > a.lastTurn && !a.queuedWords(s) {
 			recent = append(recent, s)
 		}
 	}
@@ -181,6 +181,18 @@ func (a *Agent) startTurn(ctx context.Context, q queued) {
 	a.log.Info("agent: turn", "id", q.cmd.ID, "auto", q.auto, "recent", len(recent))
 	a.brain.sess.SendTurn(t.text, true)
 	a.setStatus()
+}
+
+// queuedWords reports whether a segment is a command still waiting its
+// turn: it comes as its own turn, so it stays out of the others'.
+func (a *Agent) queuedWords(s store.Segment) bool {
+	for _, q := range a.queue {
+		c := q.cmd
+		if !q.auto && c.Identity == s.Identity && s.StartMs < c.EndMs && s.EndMs > c.StartMs {
+			return true
+		}
+	}
+	return false
 }
 
 // check ends a turn the model has gone quiet on.

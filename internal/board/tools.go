@@ -38,7 +38,9 @@ func Tools() []*genai.Tool {
 		{
 			Name: AddNode,
 			Description: "Put a box on the board, or change one: one box per call, all of a command's calls at once. " +
-				"Pick a short snake_case id (train, book_seats) and reuse it to change that box later.",
+				"Pick a short snake_case id (train, book_seats) and reuse it to change that box later. " +
+				"To put a box between two that an arrow joins (a step between test and deploy), give after the first, " +
+				"connect it to the second, and remove the old arrow (remove with ids [\"test->deploy\"]) in the same batch.",
 			Behavior: nb,
 			Parameters: object(map[string]*genai.Schema{
 				"id":    str("Short snake_case id you choose, unique on the board."),

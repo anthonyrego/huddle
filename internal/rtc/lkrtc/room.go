@@ -48,6 +48,9 @@ type Connector struct {
 	// Arrival, when set, is told of every received audio packet (a debug
 	// trace: huddle voice -arrivals).
 	Arrival func(identity string, seq uint16, ts uint32, size int, at time.Time)
+	// NewDecoder makes a decoder for each remote video track (the app's
+	// platform one); without it, video tracks aren't played.
+	NewDecoder func() (rtc.VideoDecoder, error)
 }
 
 // NewSim is a Connector.Sim with fixed settings and a fresh seed per stream.
@@ -493,4 +496,12 @@ func (r *room) Leave() {
 		r.lk.Disconnect()
 		slog.Info("voice: left the room")
 	})
+}
+
+// errNoVideo is PublishVideo's answer until stage 2's pipeline lands.
+var errNoVideo = errors.New("video: not built yet")
+
+// PublishVideo sends a camera or a screen.
+func (r *room) PublishVideo(src rtc.VideoSource, kind rtc.VideoKind) (rtc.VideoPub, error) {
+	return nil, errNoVideo
 }

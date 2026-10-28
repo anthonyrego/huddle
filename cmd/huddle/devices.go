@@ -29,6 +29,7 @@ type devicePrefs struct {
 	Mic      string `json:"mic,omitempty"`      // a device UID; "" follows the system's default
 	Speakers string `json:"speakers,omitempty"` // the same
 	EchoOff  bool   `json:"echoOff,omitempty"`  // no echo cancelling (headphones)
+	Camera   string `json:"camera,omitempty"`   // a camera's UID (AVCaptureDevice uniqueID); "" the default
 }
 
 func devicesPath(data string) string { return filepath.Join(data, "devices.json") }

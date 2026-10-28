@@ -10,6 +10,8 @@ package rtc
 import (
 	"context"
 	"time"
+
+	"github.com/anthonyrego/huddle/internal/video"
 )
 
 // SampleRate and FrameSamples fix the PCM that crosses the interface.
@@ -58,6 +60,9 @@ type Events struct {
 	// Reconnecting and Reconnected bracket the SDK's own attempt to get a
 	// dropped connection back; Disconnected follows if it can't.
 	Reconnecting, Reconnected func()
+	// VideoAdded and VideoRemoved bring each remote camera and screen as
+	// it comes and goes.
+	VideoAdded, VideoRemoved func(VideoTrack)
 }
 
 // Mic is where the room takes the local voice from: 10 ms frames, already
@@ -82,6 +87,9 @@ type Room interface {
 	Play(spk Speaker) error
 	Participants() []Participant
 	Stats() Stats
+	// PublishVideo starts sending a camera or a screen; the returned
+	// publication stops it.
+	PublishVideo(src VideoSource, kind VideoKind) (VideoPub, error)
 	// Leave hangs up. It is safe to call more than once.
 	Leave()
 }
@@ -89,4 +97,70 @@ type Room interface {
 // Connector joins rooms. Track V provides the LiveKit one.
 type Connector interface {
 	Connect(ctx context.Context, j Join, ev Events) (Room, error)
+}
+
+// Video crosses this boundary encoded on the way out and decoded on the
+// way in: the platform's encoder and decoder (VideoToolbox on macOS) stay
+// on the app's side, so the room's code builds everywhere. Frames are
+// video.Frame (NV12 in Go memory); access units are H.264 Annex-B.
+
+// VideoKind is what a video shows.
+type VideoKind int
+
+const (
+	Camera VideoKind = iota
+	Screen
+)
+
+func (k VideoKind) String() string {
+	if k == Screen {
+		return "screen"
+	}
+	return "camera"
+}
+
+// Layer is one simulcast layer a video is sent at.
+type Layer struct {
+	W, H    int
+	Bitrate int // bits a second at full rate
+}
+
+// VideoSource is a local video, encoded at one or more layers (largest
+// first). The room publishes the layers and tells the source what the
+// network asks of it.
+type VideoSource interface {
+	Layers() []Layer
+	// Start begins delivering each layer's access units to write, from
+	// the source's own goroutines, until Stop.
+	Start(write func(layer int, au []byte, pts time.Duration)) error
+	// KeyFrame asks a layer for a keyframe (a receiver's PLI or FIR).
+	KeyFrame(layer int)
+	// SetBitrates gives each layer the bits a second it may use now, from
+	// congestion control; 0 pauses a layer.
+	SetBitrates(bps []int)
+	Stop()
+}
+
+// VideoPub is a published video.
+type VideoPub interface {
+	Stop()
+}
+
+// VideoDecoder turns one remote track's access units into frames. It
+// reports false when a unit made no picture (parameter sets alone).
+type VideoDecoder interface {
+	Decode(au []byte, f *video.Frame) (bool, error)
+	Close()
+}
+
+// VideoTrack is a remote camera or screen, decoded.
+type VideoTrack interface {
+	Identity() string // whose it is
+	Kind() VideoKind
+	// Take calls fn with the newest frame, under the track's lock, if it's
+	// newer than after (0 for any); it returns that frame's seq.
+	Take(after uint64, fn func(video.Frame)) (uint64, bool)
+	// SetSize says how big the track is shown, in pixels, so the SFU can
+	// send the layer that fits (0, 0: not shown).
+	SetSize(w, h int)
 }

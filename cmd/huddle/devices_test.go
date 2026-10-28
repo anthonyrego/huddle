@@ -122,6 +122,9 @@ func (nullRoom) Play(rtc.Speaker) error          { return nil }
 func (nullRoom) Participants() []rtc.Participant { return nil }
 func (nullRoom) Stats() rtc.Stats                { return rtc.Stats{} }
 func (nullRoom) Leave()                          {}
+func (nullRoom) PublishVideo(rtc.VideoSource, rtc.VideoKind) (rtc.VideoPub, error) {
+	return nil, nil
+}
 
 // TestSwitchSpeakers plays into the room's speaker while the speakers
 // switch between two virtual outputs (no sound in the room, no mic): the

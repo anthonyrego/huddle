@@ -57,6 +57,7 @@ type call struct {
 	room     rtc.Room
 	dev      *audio.Voice // nil between devices
 	prefs    devicePrefs
+	vid      videoState // video.go
 	switchMu sync.Mutex // one opening of the devices at a time (devices.go)
 }
 

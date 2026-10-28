@@ -34,6 +34,25 @@ func (d *Doc) Digest() string {
 		}
 		b.WriteByte('\n')
 	}
+	for _, t := range append([]string{""}, d.gorder...) {
+		if o, ok := d.orders[t]; ok {
+			name := t
+			if name == "" {
+				name = "board"
+			}
+			fmt.Fprintf(&b, "order %s %s", name, o.By)
+			if len(o.IDs) > 0 {
+				fmt.Fprintf(&b, " %s", strings.Join(o.IDs, ","))
+			}
+			b.WriteByte('\n')
+		}
+	}
+	if len(d.notes) > 0 {
+		b.WriteString("NOTES:\n")
+		for _, l := range d.notes {
+			fmt.Fprintf(&b, "- %s\n", l)
+		}
+	}
 	return strings.TrimRight(b.String(), "\n")
 }
 

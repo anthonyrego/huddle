@@ -77,6 +77,22 @@ type Group struct {
 	ID, Label string
 }
 
+// Ways to sort a group's members or the board's columns.
+const (
+	ByAlpha  = "alpha"  // by label
+	ByChrono = "chrono" // in the order they were put on the board
+	ByCustom = "custom" // in the order given, the rest after in the order they came
+)
+
+// Order is how a group's members, or the whole board, are sorted.
+type Order struct {
+	By  string
+	IDs []string // ByCustom: the order wanted
+}
+
+// MaxNotes is how many lines the meeting's notes panel keeps.
+const MaxNotes = 60
+
 // Doc is the board. Nodes and groups keep the order they were added in,
 // which the layout uses to break ties.
 type Doc struct {
@@ -85,11 +101,73 @@ type Doc struct {
 	links  []Link
 	groups map[string]*Group
 	gorder []string
+	orders map[string]Order // by group id; "" is the whole board
+	notes  []string         // the meeting's notes panel
 }
 
 // New returns an empty board.
 func New() *Doc {
-	return &Doc{nodes: map[string]*Node{}, groups: map[string]*Group{}}
+	return &Doc{nodes: map[string]*Node{}, groups: map[string]*Group{}, orders: map[string]Order{}}
+}
+
+// Notes are the lines of the meeting's notes panel.
+func (d *Doc) Notes() []string { return slices.Clone(d.notes) }
+
+// OrderOf is how target (a group id, or "" for the whole board) is
+// sorted; ok is false when it isn't.
+func (d *Doc) OrderOf(target string) (Order, bool) {
+	o, ok := d.orders[target]
+	return o, ok
+}
+
+// Compare returns a comparison of node or group ids for target's order,
+// or nil when target isn't sorted. A group stands for its first member.
+func (d *Doc) Compare(target string) func(a, b string) int {
+	o, ok := d.orders[target]
+	if !ok {
+		return nil
+	}
+	index := func(id string) int {
+		if g := d.groups[id]; g != nil {
+			best := len(d.order) + slices.Index(d.gorder, id)
+			for i, nid := range d.order {
+				if d.nodes[nid].Group == id {
+					return i
+				}
+			}
+			return best
+		}
+		return slices.Index(d.order, id)
+	}
+	label := func(id string) string {
+		if n := d.nodes[id]; n != nil {
+			return strings.ToLower(n.Label)
+		}
+		if g := d.groups[id]; g != nil {
+			return strings.ToLower(g.Label)
+		}
+		return id
+	}
+	return func(a, b string) int {
+		switch o.By {
+		case ByAlpha:
+			if c := strings.Compare(label(a), label(b)); c != 0 {
+				return c
+			}
+		case ByCustom:
+			ia, ib := slices.Index(o.IDs, a), slices.Index(o.IDs, b)
+			if ia < 0 {
+				ia = len(o.IDs)
+			}
+			if ib < 0 {
+				ib = len(o.IDs)
+			}
+			if ia != ib {
+				return ia - ib
+			}
+		}
+		return index(a) - index(b)
+	}
 }
 
 // Node returns the node with id, or nil.
@@ -143,7 +221,7 @@ func (d *Doc) Satellites(host string) []*Node {
 }
 
 // Empty reports whether nothing is on the board.
-func (d *Doc) Empty() bool { return len(d.order) == 0 && len(d.gorder) == 0 }
+func (d *Doc) Empty() bool { return len(d.order) == 0 && len(d.gorder) == 0 && len(d.notes) == 0 }
 
 // ids lists the node ids, sorted, for error messages.
 func (d *Doc) ids() string {
@@ -186,5 +264,52 @@ func (d *Doc) removeGroup(id string) {
 		n.Group = ""
 	}
 	delete(d.groups, id)
+	delete(d.orders, id)
 	d.gorder = slices.DeleteFunc(d.gorder, func(x string) bool { return x == id })
+}
+
+// Ops are ops that rebuild the board from empty: frames, then boxes in the
+// order they came (the boxes that hang from others after them), arrows,
+// notes under boxes, the notes panel and the orders. A version stores
+// these rather than every op since the start, so a long meeting's
+// snapshot stays the size of its board.
+func (d *Doc) Ops() []Op {
+	var ops []Op
+	for _, g := range d.Groups() {
+		ops = append(ops, Op{Name: Frame, ID: g.ID, Label: g.Label})
+	}
+	add := func(n *Node) {
+		ops = append(ops, Op{Name: AddNode, ID: n.ID, Kind: n.Kind, Label: n.Label, Detail: n.Detail, On: n.On, Group: n.Group})
+	}
+	for _, n := range d.Nodes() {
+		if n.On == "" {
+			add(n)
+		}
+	}
+	for _, n := range d.Nodes() {
+		if n.On != "" {
+			add(n)
+		}
+	}
+	for _, l := range d.links {
+		ops = append(ops, Op{Name: Connect, From: l.From, To: l.To, Label: l.Label})
+	}
+	for _, n := range d.Nodes() {
+		if n.Note != "" {
+			ops = append(ops, Op{Name: Annotate, Target: n.ID, Text: n.Note})
+		}
+	}
+	if len(d.notes) > 0 {
+		ops = append(ops, Op{Name: Notes, Lines: slices.Clone(d.notes), Replace: true})
+	}
+	targets := make([]string, 0, len(d.orders))
+	for t := range d.orders {
+		targets = append(targets, t)
+	}
+	slices.Sort(targets)
+	for _, t := range targets {
+		o := d.orders[t]
+		ops = append(ops, Op{Name: Sort, Group: t, By: o.By, IDs: slices.Clone(o.IDs)})
+	}
+	return ops
 }

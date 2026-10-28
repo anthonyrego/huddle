@@ -1,12 +1,11 @@
-package lkrtc
+package room
 
-// Sending video: each layer of a source is its own lksdk track, published
-// together as one simulcast track (the SFU forwards each receiver the
-// layer that fits it). A receiver's keyframe request reaches the layer it
-// was for; the estimate is shared among every layer of every video sent.
+// Sending video: the layers of a source are published as one simulcast
+// track (the SFU forwards each receiver the layer that fits it). A
+// receiver's keyframe request reaches the layer it was for; the estimate
+// is shared among every layer of every video sent.
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
@@ -14,24 +13,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/livekit/protocol/livekit"
-	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/rtcp"
-	"github.com/pion/webrtc/v4"
-	"github.com/pion/webrtc/v4/pkg/media"
 
 	"github.com/anthonyrego/huddle/internal/rtc"
 	"github.com/anthonyrego/huddle/internal/rtc/icept"
 	"github.com/anthonyrego/huddle/internal/video"
 )
-
-// h264 is what every video is sent as: H.264 Constrained Baseline, one
-// NAL unit per packet or fragmented (packetization mode 1).
-var h264 = webrtc.RTPCodecCapability{
-	MimeType:    webrtc.MimeTypeH264,
-	ClockRate:   90000,
-	SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
-}
 
 // keyEvery is the least time between two keyframes asked for on one layer:
 // several receivers asking at once get one.
@@ -43,8 +30,7 @@ type videoPub struct {
 	src    rtc.VideoSource
 	kind   rtc.VideoKind
 	layers []rtc.Layer
-	tracks []*lksdk.LocalTrack
-	pub    *lksdk.LocalTrackPublication
+	out    videoOut
 	base   uint32 // the RTP timestamp at pts 0
 
 	lastKey  []atomic.Int64 // per layer: when a keyframe was last asked for (unix ns)
@@ -62,50 +48,21 @@ type videoPub struct {
 	stopped bool
 }
 
-// qualities are the layers' LiveKit qualities, by how many there are,
-// largest first.
-var qualities = map[int][]livekit.VideoQuality{
-	1: {livekit.VideoQuality_HIGH},
-	2: {livekit.VideoQuality_HIGH, livekit.VideoQuality_LOW},
-	3: {livekit.VideoQuality_HIGH, livekit.VideoQuality_MEDIUM, livekit.VideoQuality_LOW},
-}
-
 // PublishVideo sends a camera or a screen, a simulcast layer per layer of
 // the source.
 func (r *room) PublishVideo(src rtc.VideoSource, kind rtc.VideoKind) (rtc.VideoPub, error) {
 	layers := src.Layers()
-	qs := qualities[len(layers)]
-	if qs == nil {
-		return nil, fmt.Errorf("video: %d layers (1 to 3)", len(layers))
-	}
 	p := &videoPub{r: r, src: src, kind: kind, layers: layers, base: rand.Uint32() | 1,
 		lastKey: make([]atomic.Int64, len(layers)), keys: make([]atomic.Int64, len(layers)),
 		written: make([]atomic.Int64, len(layers)), bytes: make([]atomic.Int64, len(layers)),
 		keysOut: make([]atomic.Int64, len(layers)), biggest: make([]atomic.Int64, len(layers)),
 		fill: make([]atomic.Int64, len(layers)), lastPTS: make([]atomic.Int64, len(layers)), padBytes: make([]atomic.Int64, len(layers)),
 		bps: make([]int, len(layers))}
-	id := fmt.Sprintf("huddle-%s-%08x", kind, rand.Uint32())
-	for i, l := range layers {
-		vl := &livekit.VideoLayer{Quality: qs[i], Width: uint32(l.W), Height: uint32(l.H), Bitrate: uint32(l.Bitrate)}
-		t, err := lksdk.NewLocalTrack(h264, lksdk.WithSimulcast(id, vl), lksdk.WithRTCPHandler(func(pkt rtcp.Packet) { p.rtcp(i, pkt) }))
-		if err != nil {
-			return nil, err
-		}
-		p.tracks = append(p.tracks, t)
-	}
-	source, name := livekit.TrackSource_CAMERA, "camera"
-	if kind == rtc.Screen {
-		source, name = livekit.TrackSource_SCREEN_SHARE, "screen"
-	}
-	pub, err := r.lk.LocalParticipant.PublishSimulcastTrack(p.tracks, &lksdk.TrackPublicationOptions{
-		Name: name, Source: source, VideoWidth: layers[0].W, VideoHeight: layers[0].H})
+	out, err := r.t.publishVideo(kind, layers, p.rtcp)
 	if err != nil {
-		return nil, fmt.Errorf("publish the %s: %w", kind, err)
+		return nil, err
 	}
-	if pub == nil {
-		return nil, errors.New("video: nothing published")
-	}
-	p.pub = pub
+	p.out = out
 	full := make([]int, len(layers))
 	for i, l := range layers {
 		full[i] = l.Bitrate
@@ -113,10 +70,10 @@ func (r *room) PublishVideo(src rtc.VideoSource, kind rtc.VideoKind) (rtc.VideoP
 	r.cc.add(p, full)
 	if err := src.Start(p.write); err != nil {
 		r.cc.remove(p)
-		r.lk.LocalParticipant.UnpublishTrack(pub.SID())
+		out.unpublish()
 		return nil, err
 	}
-	slog.Info("video: publishing", "kind", kind, "track", pub.SID(), "layers", layerNames(layers))
+	slog.Info("video: publishing", "kind", kind, "track", out.sid(), "layers", layerNames(layers))
 	return p, nil
 }
 
@@ -131,19 +88,12 @@ func layerNames(ls []rtc.Layer) []string {
 // write sends one access unit of a layer; pts is its capture time on the
 // source's clock, which sets its RTP timestamp.
 func (p *videoPub) write(layer int, au []byte, pts time.Duration) {
-	if layer < 0 || layer >= len(p.tracks) {
+	if layer < 0 || layer >= len(p.layers) {
 		return
 	}
 	ts := p.base + uint32(pts*90000/time.Second)
-	if ts == 0 {
-		ts = 1 // lksdk reads 0 as "none given"
-	}
 	au = p.padded(layer, au, pts)
-	// The duration only sets the least step between timestamps (lksdk
-	// would hold the clock back to it); the timestamp itself is the
-	// capture time's.
-	err := p.tracks[layer].WriteSample(media.Sample{Data: au, Duration: time.Millisecond, PacketTimestamp: ts}, nil)
-	if err != nil {
+	if err := p.out.write(layer, au, ts); err != nil {
 		slog.Debug("video: write", "layer", layer, "err", err)
 		return
 	}
@@ -218,7 +168,7 @@ func (p *videoPub) Stop() {
 	p.mu.Unlock()
 	p.src.Stop()
 	p.r.cc.remove(p)
-	if err := p.r.lk.LocalParticipant.UnpublishTrack(p.pub.SID()); err != nil && !errors.Is(err, lksdk.ErrCannotFindTrack) {
+	if err := p.out.unpublish(); err != nil {
 		slog.Debug("video: unpublish", "err", err)
 	}
 	slog.Info("video: stopped publishing", "kind", p.kind)
@@ -258,8 +208,7 @@ type videoCC struct {
 	r *room
 
 	mu       sync.Mutex
-	pcIDs    map[string]*estimator // every peer connection's, by id, until the publisher's is known
-	est      *estimator
+	est      *icept.Estimator
 	alloc    allocator
 	pubs     []*videoPub
 	raw      int // GCC's estimate
@@ -270,28 +219,17 @@ type videoCC struct {
 }
 
 func newVideoCC(r *room) *videoCC {
-	return &videoCC{r: r, pcIDs: map[string]*estimator{}, raw: bweInitial, quit: make(chan struct{})}
+	return &videoCC{r: r, raw: icept.BWEInitial, quit: make(chan struct{})}
 }
 
-// found is the cc interceptor telling us of a peer connection's estimator.
-func (v *videoCC) found(id string, e *estimator) {
-	v.mu.Lock()
-	v.pcIDs[id] = e
-	v.mu.Unlock()
-}
-
-// estimator is the publisher connection's.
-func (v *videoCC) estimator() *estimator {
+// estimator is the publisher connection's, once the transport has one.
+func (v *videoCC) estimator() *icept.Estimator {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.est != nil {
 		return v.est
 	}
-	pc := v.r.lk.LocalParticipant.GetPublisherPeerConnection()
-	if pc == nil {
-		return nil
-	}
-	e := v.pcIDs[pc.ID()]
+	e := v.r.t.estimator()
 	if e == nil {
 		return nil
 	}
@@ -351,7 +289,7 @@ func (v *videoCC) remove(p *videoPub) {
 func (v *videoCC) allocate() {
 	sent := 0
 	if e := v.estimator(); e != nil {
-		sent = e.pacer.sentRate()
+		sent = e.Pacer.SentRate()
 	}
 	v.mu.Lock()
 	if len(v.pubs) == 0 {
@@ -384,7 +322,7 @@ func (v *videoCC) allocate() {
 	pace := max(v.usable, given)
 	v.mu.Unlock()
 	if est != nil {
-		est.pacer.setRate(pace)
+		est.Pacer.SetRate(pace)
 	}
 	for _, s := range sets {
 		s.p.setBitrates(s.bps)
@@ -404,8 +342,8 @@ func (v *videoCC) estimate() Estimate {
 	var s Estimate
 	e := v.estimator()
 	if e != nil {
-		s.Sent = e.pacer.sentRate()
-		s.Queue, s.QueueBytes = e.pacer.queued()
+		s.Sent = e.Pacer.SentRate()
+		s.Queue, s.QueueBytes = e.Pacer.Queued()
 	}
 	v.mu.Lock()
 	s.Raw, s.Usable = v.raw, v.usable

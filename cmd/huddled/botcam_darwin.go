@@ -7,13 +7,13 @@ import (
 
 	"github.com/anthonyrego/huddle/internal/platform/macvideo"
 	"github.com/anthonyrego/huddle/internal/rtc"
-	"github.com/anthonyrego/huddle/internal/rtc/lkrtc"
+	rtcroom "github.com/anthonyrego/huddle/internal/rtc/room"
 )
 
 // runCam publishes the test pattern as a camera or a screen until ctx
 // ends. It subscribes to nothing.
 func runCam(ctx context.Context, join rtc.Join, share bool) error {
-	room, err := (&lkrtc.Connector{SendOnly: true}).Connect(ctx, join, rtc.Events{})
+	room, err := (&rtcroom.Connector{SendOnly: true}).Connect(ctx, join, rtc.Events{})
 	if err != nil {
 		return err
 	}

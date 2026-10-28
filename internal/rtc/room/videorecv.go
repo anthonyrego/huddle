@@ -1,4 +1,4 @@
-package lkrtc
+package room
 
 // Receiving video: each remote camera or screen is read as raw RTP, put
 // back together into access units, held for lip sync, decoded with the
@@ -10,8 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/livekit/protocol/livekit"
-	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 
@@ -38,8 +36,7 @@ type videoTrack struct {
 	r     *room
 	who   string
 	kind  rtc.VideoKind
-	pub   *lksdk.RemoteTrackPublication
-	rp    *lksdk.RemoteParticipant
+	ctl   remoteVideo
 	track *webrtc.TrackRemote
 	dec   rtc.VideoDecoder
 	sr    srClock
@@ -68,6 +65,8 @@ type videoTrack struct {
 	holdSum  time.Duration
 	holdN    int
 	lastSize [2]int
+	shown    bool   // a frame has been shown
+	shownTS  uint32 // the RTP timestamp of the last one
 }
 
 // VideoTrackStats are a remote video's numbers.
@@ -83,6 +82,8 @@ type VideoTrackStats struct {
 	PLIs       int // keyframes asked for
 	DecodeErrs int
 	LostPkts   int // packets given up for good
+	Cut        int // units cut off by the next (a layer switch), dropped
+	Stale      int // frames decoded but not shown: no newer than the last shown
 	// Recoveries are how long each loss took to mend: from the gap found
 	// to the next keyframe shown.
 	Recoveries []time.Duration
@@ -134,14 +135,14 @@ func (t *videoTrack) sendSize() {
 	t.sizeMu.Unlock()
 	switch {
 	case off:
-		t.pub.SetEnabled(false)
+		t.ctl.setEnabled(false)
 	default:
-		t.pub.SetVideoDimensions(uint32(w), uint32(h))
+		t.ctl.setSize(w, h)
 		if was {
 			// Shown again: the SFU forwards from the next keyframe, so ask
 			// for one rather than wait for it (once the SFU has the
 			// setting), and decode nothing before it.
-			t.pub.SetEnabled(true)
+			t.ctl.setEnabled(true)
 			t.mu.Lock()
 			t.waitKey = true
 			t.mu.Unlock()
@@ -151,44 +152,46 @@ func (t *videoTrack) sendSize() {
 	slog.Info("video: size asked", "identity", t.who, "kind", t.kind, "w", w, "h", h)
 }
 
-func (r *room) subscribedVideo(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-	if !strings.EqualFold(track.Codec().MimeType, webrtc.MimeTypeH264) {
-		slog.Warn("video: not H.264, not shown", "identity", rp.Identity(), "codec", track.Codec().MimeType)
-		return
+// subscribedVideo starts showing a video track we're sent, and returns
+// what reads its RTCP.
+func (r *room) subscribedVideo(rt remoteTrack) func(rtcp.Packet) {
+	if !strings.EqualFold(rt.track.Codec().MimeType, webrtc.MimeTypeH264) {
+		slog.Warn("video: not H.264, not shown", "identity", rt.who, "codec", rt.track.Codec().MimeType)
+		return nil
 	}
 	if r.cfg.NewDecoder == nil {
-		slog.Info("video: no decoder; not shown", "identity", rp.Identity())
-		return
+		slog.Info("video: no decoder; not shown", "identity", rt.who)
+		return nil
 	}
 	dec, err := r.cfg.NewDecoder()
 	if err != nil {
 		slog.Error("video: decoder", "err", err)
-		return
+		return nil
 	}
 	kind := rtc.Camera
-	if pub.Source() == livekit.TrackSource_SCREEN_SHARE {
+	if rt.source == sourceScreen {
 		kind = rtc.Screen
 	}
-	t := &videoTrack{r: r, who: rp.Identity(), kind: kind, pub: pub, rp: rp, track: track, dec: dec,
+	t := &videoTrack{r: r, who: rt.who, kind: kind, ctl: rt.video, track: rt.track, dec: dec,
 		aus: make(chan au, 64), done: make(chan struct{}), waitKey: true, subAt: time.Now(),
 		wantW: -1, wantH: -1, sentW: -1, sentH: -1}
 	t.st.Identity, t.st.Kind = t.who, kind
-	pub.OnRTCP(t.sr.read)
 	r.mu.Lock()
-	r.videos[pub.SID()] = t
+	r.videos[rt.sid] = t
 	r.mu.Unlock()
-	slog.Info("video: receiving", "identity", t.who, "kind", kind, "track", pub.SID())
+	slog.Info("video: receiving", "identity", t.who, "kind", kind, "track", rt.sid)
 	go t.read()
 	go t.play()
 	if r.ev.VideoAdded != nil {
 		r.ev.VideoAdded(t)
 	}
+	return t.sr.read
 }
 
-func (r *room) unsubscribedVideo(pub *lksdk.RemoteTrackPublication) {
+func (r *room) unsubscribedVideo(sid string) {
 	r.mu.Lock()
-	t := r.videos[pub.SID()]
-	delete(r.videos, pub.SID())
+	t := r.videos[sid]
+	delete(r.videos, sid)
 	r.mu.Unlock()
 	if t == nil {
 		return
@@ -213,7 +216,7 @@ func (t *videoTrack) read() {
 		for _, u := range asm.push(p, now) {
 			t.mu.Lock()
 			t.st.Units++
-			t.st.LostPkts = asm.Dropped
+			t.st.LostPkts, t.st.Cut = asm.Dropped, asm.Cut
 			if u.gap && !t.waitKey {
 				t.st.Gaps++
 				t.waitKey, t.lostAt = true, now
@@ -249,11 +252,19 @@ func (t *videoTrack) askKey() {
 	t.lastPLI = time.Now()
 	t.st.PLIs++
 	t.mu.Unlock()
-	t.rp.WritePLI(webrtc.SSRC(t.track.SSRC()))
+	t.ctl.pli()
 }
 
+// staleMost is how far behind the last frame shown (in 90 kHz ticks) a
+// frame can be and still be old news; further back, the sender's clock
+// started over, and the frame is shown.
+const staleMost = 5 * 90000
+
 // play holds each unit until the same person's audio reaches it, decodes
-// it and shows it.
+// it and shows it if it's newer than the last frame shown. An older one
+// (the SFU switched to a layer behind the last, and sent a few frames
+// again from its keyframe) is decoded, for the frames after it, and not
+// shown.
 func (t *videoTrack) play() {
 	defer t.dec.Close()
 	var f video.Frame
@@ -280,6 +291,14 @@ func (t *videoTrack) play() {
 		if !ok {
 			continue
 		}
+		t.mu.Lock()
+		if d := int32(u.ts - t.shownTS); t.shown && d <= 0 && d >= -staleMost {
+			t.st.Stale++
+			t.mu.Unlock()
+			continue
+		}
+		t.shown, t.shownTS = true, u.ts
+		t.mu.Unlock()
 		now := time.Now()
 		f.At, f.Mirror = now, false
 		t.latest.Put(f)
@@ -335,7 +354,7 @@ func (t *videoTrack) logStats() {
 	s := t.Stats()
 	slog.Info("video: track", "identity", s.Identity, "kind", s.Kind, "w", s.W, "h", s.H, "frames", s.Frames, "keyframes", s.Keyframes,
 		"units", s.Units, "skipped", s.Skipped, "gaps", s.Gaps, "plis", s.PLIs, "decodeErrs", s.DecodeErrs, "lostPkts", s.LostPkts,
-		"lipSyncHold", s.Held.Round(time.Millisecond), "firstFrame", s.FirstFrame.Round(time.Millisecond))
+		"cut", s.Cut, "stale", s.Stale, "lipSyncHold", s.Held.Round(time.Millisecond), "firstFrame", s.FirstFrame.Round(time.Millisecond))
 }
 
 // VideoTracks returns each remote video's numbers (for tools).

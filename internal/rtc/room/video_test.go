@@ -1,13 +1,11 @@
-package lkrtc
+package room
 
 import (
 	"bytes"
 	"math/rand/v2"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
@@ -73,16 +71,54 @@ func TestAssembleInOrder(t *testing.T) {
 	for _, p := range packetize(aus) {
 		got = append(got, a.push(p, now)...)
 	}
-	// The first unit is skipped: the assembler starts after a marker.
-	if len(got) != len(aus)-1 {
-		t.Fatalf("%d units out, want %d", len(got), len(aus)-1)
+	// The stream starts with a keyframe's first packet: it comes out.
+	if len(got) != len(aus) {
+		t.Fatalf("%d units out, want %d", len(got), len(aus))
 	}
 	for i, u := range got {
-		if !same(u.data, aus[i+1]) {
-			t.Fatalf("unit %d differs", i+1)
+		if !same(u.data, aus[i]) {
+			t.Fatalf("unit %d differs", i)
 		}
-		if u.key != ((i+1)%10 == 0) || u.gap {
-			t.Fatalf("unit %d: key %v gap %v", i+1, u.key, u.gap)
+		if u.key != (i%10 == 0) || u.gap {
+			t.Fatalf("unit %d: key %v gap %v", i, u.key, u.gap)
+		}
+	}
+}
+
+// TestAssembleJoinMidway: joined in the middle of a unit, the assembler
+// starts after the first marker, or at a keyframe's first packet if one
+// comes before it.
+func TestAssembleJoinMidway(t *testing.T) {
+	aus := units(30, 10)
+	pkts := packetize(aus)
+	from := func(unit, packet int) []*rtp.Packet {
+		n := 0
+		for i, p := range pkts {
+			if n == unit {
+				return pkts[i+packet:]
+			}
+			if p.Marker {
+				n++
+			}
+		}
+		return nil
+	}
+	for _, c := range []struct {
+		name         string
+		unit, packet int
+		first        int // the first unit out
+	}{
+		{"in a P slice", 6, 1, 7},  // unit 6 takes three packets
+		{"in a keyframe", 0, 2, 1}, // its IDR is in FU-A fragments
+		{"at a keyframe", 10, 0, 10},
+	} {
+		a := newAssembler()
+		var got []au
+		for _, p := range from(c.unit, c.packet) {
+			got = append(got, a.push(p, time.Now())...)
+		}
+		if len(got) != len(aus)-c.first || !same(got[0].data, aus[c.first]) || got[0].gap {
+			t.Fatalf("joined %s: %d units out, want %d from unit %d", c.name, len(got), len(aus)-c.first, c.first)
 		}
 	}
 }
@@ -168,8 +204,8 @@ func TestAssembleLoss(t *testing.T) {
 			t.Fatal("a retransmission that came in time read as a loss")
 		}
 	}
-	if len(got) != len(aus)-1 {
-		t.Fatalf("%d units with a retransmission, want %d", len(got), len(aus)-1)
+	if len(got) != len(aus) {
+		t.Fatalf("%d units with a retransmission, want %d", len(got), len(aus))
 	}
 }
 
@@ -192,8 +228,8 @@ func TestAssemblePadding(t *testing.T) {
 	for _, p := range out {
 		got = append(got, a.push(p, time.Now())...)
 	}
-	if len(got) != len(aus)-1 {
-		t.Fatalf("%d units with padding, want %d", len(got), len(aus)-1)
+	if len(got) != len(aus) {
+		t.Fatalf("%d units with padding, want %d", len(got), len(aus))
 	}
 }
 
@@ -330,79 +366,6 @@ func TestAllocate(t *testing.T) {
 	}
 }
 
-// writes records what went out, and when.
-type writes struct {
-	mu   sync.Mutex
-	ssrc []uint32
-	at   []time.Time
-	n    int
-}
-
-func (w *writes) Write(h *rtp.Header, p []byte, _ interceptor.Attributes) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.ssrc = append(w.ssrc, h.SSRC)
-	w.at = append(w.at, time.Now())
-	w.n += h.MarshalSize() + len(p)
-	return len(p), nil
-}
-
-func TestPacerAudioFirst(t *testing.T) {
-	p := newPacer(400_000) // 600 kbps of video
-	defer p.Close()
-	var w writes
-	p.stream(&interceptor.StreamInfo{SSRC: 1, MimeType: "audio/opus"})
-	p.stream(&interceptor.StreamInfo{SSRC: 2, MimeType: "video/H264", SSRCRetransmission: 3})
-	p.AddStream(1, &w)
-	p.AddStream(2, &w)
-	// A 60 KB keyframe, then a voice packet: the voice goes at once.
-	payload := make([]byte, 1200)
-	start := time.Now()
-	for range 50 {
-		p.Write(&rtp.Header{SSRC: 2}, payload, nil)
-	}
-	p.Write(&rtp.Header{SSRC: 1}, payload[:100], nil)
-	if _, err := p.Write(&rtp.Header{SSRC: 3}, payload, nil); err != nil {
-		t.Fatalf("a retransmission: %v", err)
-	}
-	if _, err := p.Write(&rtp.Header{SSRC: 9}, payload, nil); err == nil {
-		t.Fatal("an unknown stream was taken")
-	}
-	time.Sleep(50 * time.Millisecond)
-	w.mu.Lock()
-	audioAt := -1
-	for i, s := range w.ssrc {
-		if s == 1 {
-			audioAt = i
-		}
-	}
-	sentEarly := len(w.ssrc)
-	w.mu.Unlock()
-	if audioAt < 0 || audioAt > 3 {
-		t.Fatalf("the voice went out %dth", audioAt)
-	}
-	// The rest drain at paceFactor × 400 kbps: 61 KB in about a second.
-	if sentEarly > 20 {
-		t.Fatalf("%d packets out in 50 ms: not paced", sentEarly)
-	}
-	for time.Since(start) < 3*time.Second {
-		w.mu.Lock()
-		n := len(w.ssrc)
-		w.mu.Unlock()
-		if n == 52 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	took := time.Since(start)
-	if took < 600*time.Millisecond || took > 1300*time.Millisecond {
-		t.Fatalf("drained in %v, want about a second", took)
-	}
-	if r := p.sentRate(); r < 400_000 {
-		t.Fatalf("sent rate %d", r)
-	}
-}
-
 func TestSRClock(t *testing.T) {
 	var c srClock
 	if _, ok := c.at(0, 90000); ok {
@@ -448,12 +411,12 @@ func TestFiller(t *testing.T) {
 	for _, pk := range packetize(padded) {
 		got = append(got, a.push(pk, time.Now())...)
 	}
-	if len(got) != len(padded)-1 {
+	if len(got) != len(padded) {
 		t.Fatalf("%d units out of %d", len(got), len(padded))
 	}
 	for i, u := range got {
-		if !same(u.data, padded[i+1]) {
-			t.Fatalf("unit %d changed on the way", i+1)
+		if !same(u.data, padded[i]) {
+			t.Fatalf("unit %d changed on the way", i)
 		}
 	}
 }

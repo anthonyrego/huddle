@@ -35,7 +35,7 @@ import (
 
 	"github.com/anthonyrego/huddle/internal/devjoin"
 	"github.com/anthonyrego/huddle/internal/fixturemeet"
-	"github.com/anthonyrego/huddle/internal/rtc/lkrtc"
+	rtcroom "github.com/anthonyrego/huddle/internal/rtc/room"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
 
@@ -60,7 +60,7 @@ func runBot(args []string) error {
 		return err
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
-	lkrtc.QuietSDKLogs()
+	rtcroom.QuietSDKLogs()
 	if *name == "" {
 		*name = "Echo"
 		if kind == "cam" {

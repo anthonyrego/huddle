@@ -25,7 +25,7 @@ import (
 	"github.com/anthonyrego/huddle/internal/logx"
 	"github.com/anthonyrego/huddle/internal/rtc"
 	"github.com/anthonyrego/huddle/internal/rtc/fileio"
-	"github.com/anthonyrego/huddle/internal/rtc/lkrtc"
+	rtcroom "github.com/anthonyrego/huddle/internal/rtc/room"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
 
@@ -45,10 +45,10 @@ func (s *simFlags) register(fs *flag.FlagSet) {
 	fs.Float64Var(&s.reorder, "sim-reorder", 0, "hold this share of received packets past the next one")
 }
 
-func (s simFlags) connector() *lkrtc.Connector {
-	c := &lkrtc.Connector{}
+func (s simFlags) connector() *rtcroom.Connector {
+	c := &rtcroom.Connector{}
 	if s.loss > 0 || s.jitter > 0 || s.reorder > 0 {
-		c.Sim = lkrtc.NewSim(s.loss, s.jitter, s.reorder)
+		c.Sim = rtcroom.NewSim(s.loss, s.jitter, s.reorder)
 	}
 	return c
 }
@@ -158,7 +158,7 @@ func runVoice(args []string) error {
 
 // printStats prints each participant's jitter-buffer numbers.
 func printStats(rm rtc.Room) {
-	ts := lkrtc.TrackStats(rm)
+	ts := rtcroom.TrackStats(rm)
 	who := make([]string, 0, len(ts))
 	for w := range ts {
 		who = append(who, w)

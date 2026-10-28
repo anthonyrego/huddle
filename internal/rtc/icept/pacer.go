@@ -1,4 +1,4 @@
-package lkrtc
+package icept
 
 import (
 	"container/list"
@@ -13,15 +13,15 @@ import (
 )
 
 // The send side's congestion control: pion's GCC estimator (delay and loss
-// based, fed by the SFU's transport-wide feedback), with a pacer of our
+// based, fed by the far end's transport-wide feedback), with a pacer of our
 // own. pion's pacer queues every packet in one line, so the voice waits
 // behind a keyframe; ours sends audio the moment it's written and paces
-// video at the estimate. It also knows a stream's retransmissions (RTX),
-// which reach it under their own SSRC.
+// video at the rate it's given. It also knows a stream's retransmissions
+// (RTX), which reach it under their own SSRC.
 
 // Pacing.
 const (
-	// paceFactor is how far over the estimate video may be sent while a
+	// paceFactor is how far over the rate given video may be sent while a
 	// queue drains (pion's is 1.5, WebRTC's 2.5). Kept low: whatever goes
 	// out faster than the narrowest link queues there, in front of the
 	// voice.
@@ -32,9 +32,9 @@ const (
 	paceTick = 5 * time.Millisecond
 )
 
-// pacer is a gcc.Pacer: AddStream registers a stream's writer, Write
+// Pacer is a gcc.Pacer: AddStream registers a stream's writer, Write
 // sends or queues one packet.
-type pacer struct {
+type Pacer struct {
 	mu      sync.Mutex
 	writers map[uint32]interceptor.RTPWriter
 	audio   map[uint32]bool
@@ -58,8 +58,10 @@ type paced struct {
 	at   time.Time
 }
 
-func newPacer(initial int) *pacer {
-	p := &pacer{
+// NewPacer paces video at initial bits a second (times paceFactor) until
+// SetRate says otherwise.
+func NewPacer(initial int) *Pacer {
+	p := &Pacer{
 		writers: map[uint32]interceptor.RTPWriter{},
 		audio:   map[uint32]bool{},
 		alias:   map[uint32]uint32{},
@@ -73,14 +75,14 @@ func newPacer(initial int) *pacer {
 
 // AddStream is how gcc registers a stream (with the writer that records
 // it for the feedback).
-func (p *pacer) AddStream(ssrc uint32, w interceptor.RTPWriter) {
+func (p *Pacer) AddStream(ssrc uint32, w interceptor.RTPWriter) {
 	p.mu.Lock()
 	p.writers[ssrc] = w
 	p.mu.Unlock()
 }
 
 // stream tells the pacer what a stream is before gcc adds it.
-func (p *pacer) stream(info *interceptor.StreamInfo) {
+func (p *Pacer) stream(info *interceptor.StreamInfo) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if strings.HasPrefix(strings.ToLower(info.MimeType), "audio/") {
@@ -93,18 +95,18 @@ func (p *pacer) stream(info *interceptor.StreamInfo) {
 
 // SetTargetBitrate is GCC's estimate, which the pacer doesn't follow:
 // it climbs while less is sent than it allows, and pacing at it would
-// pace nothing. The room paces at what it gave the layers (setRate).
-func (p *pacer) SetTargetBitrate(int) {}
+// pace nothing. The sender paces at what it gave the layers (SetRate).
+func (p *Pacer) SetTargetBitrate(int) {}
 
-// setRate paces video at bps (times paceFactor).
-func (p *pacer) setRate(bps int) {
+// SetRate paces video at bps (times paceFactor).
+func (p *Pacer) SetRate(bps int) {
 	p.mu.Lock()
 	p.rate = paceFactor * float64(bps)
 	p.mu.Unlock()
 }
 
 // Write sends an audio packet now and queues the rest.
-func (p *pacer) Write(h *rtp.Header, payload []byte, attr interceptor.Attributes) (int, error) {
+func (p *Pacer) Write(h *rtp.Header, payload []byte, attr interceptor.Attributes) (int, error) {
 	p.mu.Lock()
 	ssrc := h.SSRC
 	if a, ok := p.alias[ssrc]; ok {
@@ -133,7 +135,7 @@ func (p *pacer) Write(h *rtp.Header, payload []byte, attr interceptor.Attributes
 
 // run sends queued video as the budget allows: at once while there's
 // budget, then every paceTick while packets wait.
-func (p *pacer) run() {
+func (p *Pacer) run() {
 	t := time.NewTimer(time.Hour)
 	defer t.Stop()
 	for {
@@ -153,7 +155,7 @@ func (p *pacer) run() {
 }
 
 // drain sends what the budget allows; it reports whether packets wait.
-func (p *pacer) drain() bool {
+func (p *Pacer) drain() bool {
 	for {
 		p.mu.Lock()
 		now := time.Now()
@@ -177,9 +179,9 @@ func (p *pacer) drain() bool {
 	}
 }
 
-// queued is how long the oldest packet held has waited, and how much is
+// Queued is how long the oldest packet held has waited, and how much is
 // held.
-func (p *pacer) queued() (time.Duration, int) {
+func (p *Pacer) Queued() (time.Duration, int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if e := p.q.Front(); e != nil {
@@ -188,14 +190,14 @@ func (p *pacer) queued() (time.Duration, int) {
 	return 0, 0
 }
 
-// sentRate is what went out over the last second, in bits a second.
-func (p *pacer) sentRate() int {
+// SentRate is what went out over the last second, in bits a second.
+func (p *Pacer) SentRate() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.sent.rate(time.Now())
 }
 
-func (p *pacer) Close() error {
+func (p *Pacer) Close() error {
 	p.once.Do(func() { close(p.done) })
 	return nil
 }
@@ -238,45 +240,45 @@ func (m *rateMeter) rate(now time.Time) int {
 	return sum * 8
 }
 
-// estimator is one peer connection's bandwidth estimate: pion's GCC with
+// Estimator is one peer connection's bandwidth estimate: pion's GCC with
 // our pacer.
-type estimator struct {
+type Estimator struct {
 	*gcc.SendSideBWE
-	pacer *pacer
+	Pacer *Pacer
 }
 
 // AddStream tells the pacer what the stream is, then gives it to GCC.
-func (e *estimator) AddStream(info *interceptor.StreamInfo, w interceptor.RTPWriter) interceptor.RTPWriter {
-	e.pacer.stream(info)
+func (e *Estimator) AddStream(info *interceptor.StreamInfo, w interceptor.RTPWriter) interceptor.RTPWriter {
+	e.Pacer.stream(info)
 	return e.SendSideBWE.AddStream(info, w)
 }
 
 // GCC's range, and where it starts.
 const (
-	bweInitial = 1_200_000
-	bweMin     = 100_000
-	bweMax     = 8_000_000
+	BWEInitial = 1_200_000
+	BWEMin     = 100_000
+	BWEMax     = 8_000_000
 )
 
-// newCC is the congestion control interceptor; found gets each peer
-// connection's estimator as it's made.
-func newCC(found func(id string, e *estimator)) (*cc.InterceptorFactory, error) {
+// NewCC is the congestion control interceptor; made gets each peer
+// connection's estimator as it's made, with the connection's id.
+func NewCC(made func(id string, e *Estimator)) (*cc.InterceptorFactory, error) {
 	f, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
-		p := newPacer(bweInitial)
-		bwe, err := gcc.NewSendSideBWE(gcc.SendSideBWEInitialBitrate(bweInitial), gcc.SendSideBWEMinBitrate(bweMin),
-			gcc.SendSideBWEMaxBitrate(bweMax), gcc.SendSideBWEPacer(p))
+		p := NewPacer(BWEInitial)
+		bwe, err := gcc.NewSendSideBWE(gcc.SendSideBWEInitialBitrate(BWEInitial), gcc.SendSideBWEMinBitrate(BWEMin),
+			gcc.SendSideBWEMaxBitrate(BWEMax), gcc.SendSideBWEPacer(p))
 		if err != nil {
 			p.Close()
 			return nil, err
 		}
-		return &estimator{bwe, p}, nil
+		return &Estimator{bwe, p}, nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	f.OnNewPeerConnection(func(id string, bwe cc.BandwidthEstimator) {
-		if e, ok := bwe.(*estimator); ok {
-			found(id, e)
+		if e, ok := bwe.(*Estimator); ok {
+			made(id, e)
 		}
 	})
 	return f, nil

@@ -9,15 +9,17 @@ import (
 	"github.com/pion/rtp"
 )
 
-// writes records what reaches the network.
+// writes records what reaches the network, and when.
 type writes struct {
-	mu sync.Mutex
-	at []time.Time
+	mu   sync.Mutex
+	ssrc []uint32
+	at   []time.Time
 }
 
 func (w *writes) Write(h *rtp.Header, p []byte, _ interceptor.Attributes) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.ssrc = append(w.ssrc, h.SSRC)
 	w.at = append(w.at, time.Now())
 	return len(p), nil
 }

@@ -556,6 +556,9 @@ func score(s *fixturemeet.Script, t *fixturemeet.Timing, evs []agent.Event, t0 i
 		if e.Kind == agent.EvTurn && e.Detail == "auto" {
 			autoTurns++
 		}
+		if e.Kind == agent.EvSegment && e.Speaker == "Whiteboard" {
+			r.add("said aloud at %s: %q", (time.Duration(e.AtMs-t0) * time.Millisecond).Round(time.Second), e.Text)
+		}
 	}
 	if autoTurns > 0 {
 		r.add("auto mode: %d update turns", autoTurns)

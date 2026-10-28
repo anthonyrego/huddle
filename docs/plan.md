@@ -169,9 +169,23 @@ replaces lksdk behind `rtc.Connector`. LiveKit stays beside it
     It waited for the first marker, which threw away the keyframe every
     subscription starts with. Starting at a keyframe's first packet
     brings it to about 70 ms, through LiveKit too.
-- **Step 2, voice on our SFU:**
-  - **Gate:** voice-check within LiveKit's numbers, a new subscriber at
-    40 ms from the first second, agent-check unchanged.
+- **Step 2, voice on our SFU (done 2026-10-28):**
+  - Two worktrees, merged:
+    - The room's builtin transport over `sfuclient.Session`: the app,
+      the tools and `bot cam` join huddled's SFU with no change of
+      their own.
+    - The whiteboard in-process (`sfu.LocalJoin`: in the room with
+      neither socket nor connections, handed people's voices only), and
+      the voice bots on sfuclient.
+  - **Gate, measured:** voice-check and the speech scores within run-to-run
+    noise of LiveKit's; a new subscriber at 40 ms from its first packet,
+    which came 36–44 ms after joining (LiveKit's 133–136 ms); agent-check
+    `review`, `overlap` and `planning` with the same scores, the ears
+    finding speech ends at the same 460 ms; `commands.wav` through the
+    app's mic path at 480–520 ms, as on LiveKit.
+  - **Found:** pion announces a track before its first packet, and its
+    codec stays empty until one is read, so the room takes the codec
+    from what was negotiated.
 - **Step 3, video:**
   - **Gate:** Track P's numbers, plus:
     - a first frame within 300 ms

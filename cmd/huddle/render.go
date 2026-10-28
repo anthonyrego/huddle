@@ -7,6 +7,7 @@ package main
 // text pipeline), drawing the meeting window.
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/Zyko0/go-sdl3/sdl"
 
 	"github.com/anthonyrego/huddle/internal/board"
+	"github.com/anthonyrego/huddle/internal/board/layout"
 	"github.com/anthonyrego/huddle/internal/draw"
 	"github.com/anthonyrego/huddle/internal/gfx"
 	"github.com/anthonyrego/huddle/internal/platform"
@@ -87,6 +89,9 @@ func newTextPipeline() (*text.Shaper, *text.GlyphCache, error) {
 func runRender(args []string) error {
 	fs := flag.NewFlagSet("render", flag.ContinueOnError)
 	fixture := fs.String("fixture", "", "ops file to put on the board (one JSON op per line)")
+	version := fs.String("version", "", "a board.version (JSON) to draw at the server's placement, as an app in the room would")
+	typed := fs.String("typed", "", "text in the command field (focused)")
+	addressing := fs.Bool("addressing", false, "draw the push-to-address key held")
 	out := fs.String("out", "", "PNG to write (required)")
 	width := fs.Float64("width", 1200, "window width, logical units")
 	height := fs.Float64("height", 800, "window height, logical units")
@@ -105,10 +110,34 @@ func runRender(args []string) error {
 		return errors.New("-out is required")
 	}
 	var ops []board.Op
+	var place *layout.Placement
+	seq := int64(0)
 	if *fixture != "" {
 		var err error
 		if ops, err = board.ReadOps(*fixture); err != nil {
 			return err
+		}
+		seq = int64(len(ops))
+	}
+	if *version != "" {
+		b, err := os.ReadFile(*version)
+		if err != nil {
+			return err
+		}
+		var v wire.BoardVersion
+		if err := json.Unmarshal(b, &v); err != nil {
+			return fmt.Errorf("%s: %w", *version, err)
+		}
+		snap, err := board.UnmarshalSnapshot(v.Doc)
+		if err != nil {
+			return err
+		}
+		ops, seq = snap.Ops, v.Seq
+		if len(v.Layout) > 0 {
+			place = new(layout.Placement)
+			if err := json.Unmarshal(v.Layout, place); err != nil {
+				return fmt.Errorf("%s: layout: %w", *version, err)
+			}
 		}
 	}
 
@@ -121,7 +150,12 @@ func runRender(args []string) error {
 	now := time.Now()
 	sc := float32(*scale)
 	s := newMeetingScene(o.shaper, func() float32 { return sc }, &meeting{})
-	st := meetingState{rev: 1, conn: *conn, room: *room, identity: *identity, seq: int64(len(ops)), ops: ops}
+	st := meetingState{rev: 1, conn: *conn, room: *room, identity: *identity, seq: seq, ops: ops, place: place}
+	if *typed != "" {
+		s.field.SetText(*typed)
+		s.field.Focus(true)
+	}
+	s.addressing = *addressing
 	if *agent != "" {
 		st.agent = wire.AgentStatus{State: wire.AgentState(*agent), Detail: *detail, Queued: *queued}
 	}

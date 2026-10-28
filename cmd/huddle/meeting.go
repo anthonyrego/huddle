@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/anthonyrego/huddle/internal/board"
+	"github.com/anthonyrego/huddle/internal/board/layout"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
 
@@ -41,9 +42,13 @@ type meetingState struct {
 	// (nil when a whole board arrives at once, as on joining).
 	seq    int64
 	ops    []board.Op
+	place  *layout.Placement // where the server put everything (nil: lay out here)
 	reveal []board.Op
-	agent  wire.AgentStatus
-	lines  []wire.Segment
+	// revealSeq is the version reveal belongs to: the ops that made it,
+	// in the order they were drawn, and any point_at on it.
+	revealSeq int64
+	agent     wire.AgentStatus
+	lines     []wire.Segment
 }
 
 func (mt *meeting) update(f func(s *meetingState)) {
@@ -74,15 +79,24 @@ func (mt *meeting) setConn(conn, detail string) {
 	mt.update(func(s *meetingState) { s.conn, s.detail = conn, detail })
 }
 
-// setVersion shows a version: its whole snapshot, revealing newOps when
-// they're what it added to the version shown.
-func (mt *meeting) setVersion(seq int64, ops, newOps []board.Op) {
+// setVersion shows a version: its whole snapshot at the server's
+// placement, revealing newOps when they're what it added.
+func (mt *meeting) setVersion(seq int64, ops []board.Op, pl *layout.Placement, newOps []board.Op) {
 	mt.update(func(s *meetingState) {
 		if seq <= s.seq {
 			return // an older version arriving late
 		}
-		s.seq, s.ops, s.reveal = seq, ops, newOps
+		s.seq, s.ops, s.place = seq, ops, pl
+		if newOps != nil {
+			s.reveal, s.revealSeq = newOps, seq
+		}
 	})
+}
+
+// setOps takes the ops that made a version (or point_at on it), for the
+// reveal.
+func (mt *meeting) setOps(seq int64, ops []board.Op) {
+	mt.update(func(s *meetingState) { s.reveal, s.revealSeq = ops, seq })
 }
 
 // maxLines is how much of the transcript the app keeps.

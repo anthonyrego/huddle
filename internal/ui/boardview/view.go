@@ -143,6 +143,27 @@ func (v *View) ResetTo(d *board.Doc, pl *layout.Placement, now time.Time) {
 	v.dirty, v.pendingNow = true, now
 }
 
+// Reveal orders the fade-in of the boxes the newest change drew, ids in
+// the order they were drawn: the ops of a version arrive just after it.
+// Boxes already showing are left as they are.
+func (v *View) Reveal(ids []string, now time.Time) {
+	if v.dirty {
+		v.reveal = ids
+		return
+	}
+	var fresh []string
+	for id, t := range v.born {
+		if !t.Before(v.moveAt) && id != notesID {
+			fresh = append(fresh, id)
+		}
+	}
+	slices.Sort(fresh)
+	slices.SortStableFunc(fresh, func(a, b string) int { return revealRank(ids, a) - revealRank(ids, b) })
+	for i, id := range fresh {
+		v.born[id] = v.moveAt.Add(time.Duration(i) * revealGap)
+	}
+}
+
 // Doc is the board shown.
 func (v *View) Doc() *board.Doc { return v.doc }
 

@@ -58,6 +58,10 @@ type meetingScene struct {
 	// bar drew the mic, for clicks (bar.go).
 	call     *call
 	muteRect draw.Rect
+	// devRect is where the bar drew the device button; menu is the device
+	// menu (devmenu.go).
+	devRect draw.Rect
+	menu    devMenu
 }
 
 func newMeetingScene(shaper *text.Shaper, scale func() float32, mt *meeting) *meetingScene {
@@ -81,6 +85,7 @@ func (s *meetingScene) draw(l *draw.List, w, h float32, pal theme.Palette, now t
 	s.drawStatus(c, l)
 	s.drawField(c, l, stage)
 	s.drawBar(c, l, draw.Rect{Y: h - barH, W: w, H: barH})
+	s.drawMenu(c, l, w)
 }
 
 // drawField draws the command field along the bottom of the stage, and
@@ -189,6 +194,10 @@ func (s *meetingScene) event(ev *sdl.Event, pal theme.Palette) bool {
 		return false
 	}
 	c := s.ctx(pal, time.Now())
+	// An open device menu takes everything until it closes.
+	if s.menu.open {
+		return s.menuEvent(uev)
+	}
 	// The field takes keys first while it's focused, so typing an m doesn't
 	// mute; the bar's keys and clicks come after.
 	switch uev.Kind {

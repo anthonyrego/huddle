@@ -104,7 +104,9 @@ func runRender(args []string) error {
 	detail := fs.String("agent-detail", "", "with -agent: the detail after it")
 	queued := fs.Int("queued", 0, "with -agent: commands waiting")
 	people := fs.String("people", "", "the voice session's people, comma-separated: a trailing * is talking, ! the whiteboard (and you first, as you)")
-	mic := fs.String("mic", "", "with -people: the mic, on|muted|listening|lost")
+	mic := fs.String("mic", "", "with -people: the mic, on|muted|listening|lost|noecho (on without echo cancelling: it wouldn't start)")
+	menu := fs.Bool("devices", false, "with -people: the device menu open, on made-up devices")
+	echoOff := fs.Bool("echo-off", false, "with -devices: echo cancelling turned off in the menu")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -164,6 +166,11 @@ func runRender(args []string) error {
 	s.apply(st, now)
 	if *people != "" {
 		s.call = renderCall(*people, *mic)
+		if *menu {
+			s.call.prefs = devicePrefs{Speakers: "monitor", EchoOff: *echoOff}
+			s.openMenu(renderDevices, nil)
+			s.menu.hover = 3
+		}
 	}
 	w, h := float32(*width), float32(*height)
 	var l draw.List

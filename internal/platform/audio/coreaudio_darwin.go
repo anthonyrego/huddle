@@ -108,21 +108,26 @@ func setNominalRate(dev uint32, rate float64) error {
 	return fmt.Errorf("device %d didn't switch to %.0f Hz", dev, rate)
 }
 
-// matchSpeakersToMic puts the default output at the default input's rate
-// when they differ and the output can run at it. restore puts it back; it
-// is a no-op when nothing was changed.
-func matchSpeakersToMic() (restore func(), err error) {
+// matchSpeakersToMic puts the output at the input's rate when they differ
+// and the output can run at it; 0 for either is the system's default.
+// restore puts it back; it is a no-op when nothing was changed.
+func matchSpeakersToMic(in, out uint32) (restore func(), err error) {
 	restore = func() {}
 	if err := loadCoreAudio(); err != nil {
 		return restore, err
 	}
-	in, err := defaultDevice(true)
-	if err != nil {
-		return restore, err
+	if in == 0 {
+		if in, err = defaultDevice(true); err != nil {
+			return restore, err
+		}
 	}
-	out, err := defaultDevice(false)
-	if err != nil || out == in {
-		return restore, err
+	if out == 0 {
+		if out, err = defaultDevice(false); err != nil {
+			return restore, err
+		}
+	}
+	if out == in {
+		return restore, nil
 	}
 	micRate, err := nominalRate(in)
 	if err != nil {

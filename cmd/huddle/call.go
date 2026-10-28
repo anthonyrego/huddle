@@ -33,32 +33,49 @@ const (
 	callMuted     = "Muted"
 	callListening = "Listening only"
 	callLost      = "Voice lost"
+	callSwitching = "Switching…"
 )
 
 type call struct {
 	noVoice bool
 	wake    func()
+	data    string // where devices.json is kept ("" keeps nothing)
 
-	mu     sync.Mutex
-	st     callState
-	joined chan wire.Joined // the latest dev join, for (re)connecting
-	room   rtc.Room
-	dev    *audio.Voice
+	mu       sync.Mutex
+	st       callState
+	joined   chan wire.Joined // the latest dev join, for (re)connecting
+	room     rtc.Room
+	dev      *audio.Voice // nil between devices
+	prefs    devicePrefs
+	switchMu sync.Mutex // one opening of the devices at a time (devices.go)
 }
 
 // callState is what the bar shows.
 type callState struct {
 	status  string
-	detail  string // why voice is off
+	detail  string // why the mic is off
 	self    string // our identity
 	people  []rtc.Participant
 	talking map[string]bool
 	muted   bool
 	canMute bool
+	noEcho  bool   // the mic is on without echo cancelling because it wouldn't start
+	echoErr string // why
 }
 
-func newCall(noVoice bool, wake func()) *call {
-	return &call{noVoice: noVoice, wake: wake, joined: make(chan wire.Joined, 1), st: callState{status: callJoining, talking: map[string]bool{}}}
+func newCall(noVoice bool, data string, wake func()) *call {
+	c := &call{noVoice: noVoice, data: data, wake: wake, joined: make(chan wire.Joined, 1), st: callState{status: callJoining, talking: map[string]bool{}}}
+	if data != "" {
+		c.prefs = readDevicePrefs(data)
+	}
+	return c
+}
+
+// devicePicks is what the device menu has picked.
+func (c *call) devicePicks() devicePrefs {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.prefs
 }
 
 // snapshot is the state for one frame.
@@ -173,42 +190,32 @@ func (c *call) connect(ctx context.Context, j wire.Joined, lost chan error) erro
 	c.mu.Lock()
 	c.room = room
 	c.mu.Unlock()
-	// The devices open only once the room is joined.
-	dev, err := audio.OpenVoice(audio.VoiceConfig{SpeakerOnly: c.noVoice})
-	if err != nil && !c.noVoice {
-		slog.Error("voice: no voice processing; listening only", "err", err)
-		c.update(func(s *callState) bool { s.detail = "no mic: " + err.Error(); return true })
-		dev, err = audio.OpenVoice(audio.VoiceConfig{SpeakerOnly: true})
+	// The devices open only once the room is joined. The room publishes the
+	// mic for the whole call (silence while there's none) unless -no-voice.
+	c.switchMu.Lock()
+	dev, ds, err := c.openDevices(c.devicePicks())
+	if err == nil {
+		c.setDevice(room, dev, ds)
 	}
+	c.switchMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("speakers: %w", err)
 	}
-	c.mu.Lock()
-	c.dev = dev
-	c.mu.Unlock()
-	info := dev.Info()
-	if info.VoiceProcess {
-		if err := room.PublishMic(dev.Mic()); err != nil {
+	if !c.noVoice {
+		if err := room.PublishMic(&liveMic{c: c}); err != nil {
 			return err
 		}
 	}
-	if err := room.Play(dev.Speaker()); err != nil {
+	if err := room.Play(&liveSpeaker{c: c}); err != nil {
 		return err
 	}
-	c.update(func(s *callState) bool {
-		s.canMute = info.VoiceProcess
-		s.status = callListening
-		if s.canMute {
-			s.status = callOn
-		}
-		return true
-	})
-	go c.logDevices(ctx, dev)
+	go c.logDevices(ctx, room)
 	return nil
 }
 
-// logDevices puts the voice path's numbers in the log every 10 s.
-func (c *call) logDevices(ctx context.Context, dev *audio.Voice) {
+// logDevices puts the voice path's numbers in the log every 10 s while the
+// call is in room.
+func (c *call) logDevices(ctx context.Context, room rtc.Room) {
 	t := time.NewTicker(10 * time.Second)
 	defer t.Stop()
 	for {
@@ -218,13 +225,17 @@ func (c *call) logDevices(ctx context.Context, dev *audio.Voice) {
 		case <-t.C:
 		}
 		c.mu.Lock()
-		same := c.dev == dev
+		dev, same := c.dev, c.room == room
 		c.mu.Unlock()
 		if !same {
 			return
 		}
+		if dev == nil {
+			continue
+		}
 		i := dev.Info()
-		slog.Info("voice: devices", "voiceProcessing", i.VoiceProcess, "deviceMicRate", i.DeviceMic, "outputLatency", i.Latency.Round(100*time.Microsecond),
+		slog.Info("voice: devices", "mic", i.MicName, "speakers", i.SpeakerName, "echoCancel", i.EchoCancel, "micChannel", i.MicChannel, "micChannels", i.MicChannels,
+			"deviceMicRate", i.DeviceMic, "outputLatency", i.Latency.Round(100*time.Microsecond),
 			"queued", i.Queued, "micHeld", i.MicHeld, "played", i.Written.Round(time.Second), "dropped", i.Dropped, "engineRunning", i.EngineAlive)
 	}
 }
@@ -270,7 +281,7 @@ func (c *call) hangUp() {
 // renderCall is a call for render: people as "Name*" (talking) or "Name!"
 // (the whiteboard), you first; mic is on, muted, listening or lost.
 func renderCall(people, mic string) *call {
-	c := newCall(false, nil)
+	c := newCall(false, "", nil)
 	st := &c.st
 	st.status, st.canMute = callOn, true
 	switch mic {
@@ -280,6 +291,8 @@ func renderCall(people, mic string) *call {
 		st.status, st.canMute = callListening, false
 	case "lost":
 		st.status, st.canMute = callLost, false
+	case "noecho":
+		st.noEcho, st.echoErr = true, "start the audio engine: (1650879860)"
 	}
 	for i, p := range strings.Split(people, ",") {
 		p = strings.TrimSpace(p)

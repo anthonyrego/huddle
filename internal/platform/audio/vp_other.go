@@ -34,3 +34,6 @@ func Defaults() (in, out DefaultDevice, err error) { return in, out, errors.ErrU
 
 // InputRunning is macOS only.
 func InputRunning() (bool, error) { return false, errors.ErrUnsupported }
+
+// VoiceDevices is macOS only.
+func VoiceDevices() ([]VoiceDevice, error) { return nil, errors.ErrUnsupported }

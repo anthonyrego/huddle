@@ -154,7 +154,7 @@ func runApp(args []string) error {
 				a.window.Handle().StopTextInput()
 			}
 		}
-		cl := newCall(*noVoice, mt.wake)
+		cl := newCall(*noVoice, paths.Data, mt.wake)
 		c.onJoin = cl.onJoin
 		a.scene.call = cl
 		callDone := make(chan struct{})

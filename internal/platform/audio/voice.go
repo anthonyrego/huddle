@@ -2,6 +2,7 @@ package audio
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -17,6 +18,28 @@ type VoiceConfig struct {
 	Queue time.Duration
 	// SpeakerOnly opens only the speakers: no mic, no voice processing.
 	SpeakerOnly bool
+	// Mic and Speakers are the devices to use, by VoiceDevice.UID; ""
+	// follows the system's default.
+	Mic, Speakers string
+	// NoEchoCancel opens the mic without voice processing: for headphones,
+	// and for devices voice processing won't start on. The mic is then the
+	// device's loudest input channel, as it is.
+	NoEchoCancel bool
+}
+
+// ErrNoDevice is a device asked for by UID that isn't connected.
+var ErrNoDevice = errors.New("audio: no such device")
+
+// VoiceDevice is an audio device as CoreAudio has it, read without
+// opening it (VoiceDevices).
+type VoiceDevice struct {
+	UID                   string // stable across launches; VoiceConfig takes it
+	Name                  string
+	Transport             string // "built-in", "USB", "Bluetooth", "virtual", …; "" unknown
+	In, Out               int    // input and output channels: a mic has In, speakers Out
+	Rate                  float64
+	DefaultIn, DefaultOut bool // the system's default input, output
+	id                    uint32
 }
 
 func (c VoiceConfig) withDefaults() VoiceConfig {
@@ -37,14 +60,20 @@ type Voice struct{ e *vpEngine }
 
 // VoiceInfo is what the voice path is doing, for logs and audio-devices.
 type VoiceInfo struct {
-	SpeakerOnly, VoiceProcess bool
-	DeviceMic                 int           // the mic device's rate (0 without one)
-	Latency                   time.Duration // the output's presentation latency
-	Queued                    time.Duration // scheduled on the player, not yet rendered
-	Written, Dropped          time.Duration // given to Write since opening; let go because the engine wasn't taking it
-	MicHeld                   time.Duration // captured, not yet read
-	FirstRender               bool          // the player has rendered a buffer since the engine last started
-	EngineAlive               bool
+	SpeakerOnly bool   // no mic
+	EchoCancel  bool   // the mic goes through voice processing
+	MicName     string // the devices it runs on, as CoreAudio names them
+	SpeakerName string
+	// MicChannel is the input channel the voice is taken from, of
+	// MicChannels (without echo cancelling, the loudest).
+	MicChannel, MicChannels int
+	DeviceMic               int           // the mic device's rate (0 without one)
+	Latency                 time.Duration // the output's presentation latency
+	Queued                  time.Duration // scheduled on the player, not yet rendered
+	Written, Dropped        time.Duration // given to Write since opening; let go because the engine wasn't taking it
+	MicHeld                 time.Duration // captured, not yet read
+	FirstRender             bool          // the player has rendered a buffer since the engine last started
+	EngineAlive             bool
 }
 
 // VoiceMic reads the cleaned mic: 10 ms frames of float32 at MicRate,

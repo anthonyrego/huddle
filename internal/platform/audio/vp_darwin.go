@@ -32,17 +32,40 @@ import (
 //
 // SpeakerOnly opens just the output side: a player on an engine whose input
 // node is never touched, so no mic is opened and nothing is asked of the
-// user; there is no voice processing (it lives on the input).
+// user; there is no voice processing (it lives on the input). NoEchoCancel
+// opens the input node as it is: the device's own channels, no voice
+// processing.
+//
+// Devices: with none asked for, the engine runs on the system's defaults
+// and follows them when they change. A device asked for by UID is set on
+// the engine's IO units before it starts.
 
-// OpenVoice starts an engine on the default devices. With voice processing
-// it fails where that can't run: no AVFAudio, or devices it won't pair
-// (some Bluetooth headphones with the built-in mic).
+// OpenVoice starts an engine. With voice processing it fails where that
+// can't run: no AVFAudio, or devices it won't pair (some Bluetooth
+// headphones with the built-in mic, and, now and then, a USB interface
+// used for both; see waitForVPDevice).
 func OpenVoice(cfg VoiceConfig) (*Voice, error) {
 	cfg = cfg.withDefaults()
 	if err := loadAVF(); err != nil {
 		return nil, err
 	}
 	e := &vpEngine{cfg: cfg, quit: make(chan struct{}), spkSig: make(chan struct{}, 1)}
+	if cfg.Mic != "" || cfg.Speakers != "" {
+		if err := loadDevices(); err != nil {
+			return nil, err
+		}
+	}
+	var err error
+	if cfg.Mic != "" && !cfg.SpeakerOnly {
+		if e.micDev, err = findDevice(cfg.Mic, true); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.Speakers != "" {
+		if e.spkDev, err = findDevice(cfg.Speakers, false); err != nil {
+			return nil, err
+		}
+	}
 	if !cfg.SpeakerOnly {
 		conv, err := newMicConverter(cfg.MicRate)
 		if err != nil {
@@ -50,15 +73,25 @@ func OpenVoice(cfg VoiceConfig) (*Voice, error) {
 		}
 		e.conv = conv
 		e.mic = newPaced(cfg.MicRate, 500*time.Millisecond)
-		var err2 error
-		if e.restoreSpeakers, err2 = matchSpeakersToMic(); err2 != nil {
-			slog.Warn("audio: couldn't match the speakers' rate to the mic's", "err", err2)
+		if e.echoCancel() {
+			var err2 error
+			if e.restoreSpeakers, err2 = matchSpeakersToMic(e.micDev, e.spkDev); err2 != nil {
+				slog.Warn("audio: couldn't match the speakers' rate to the mic's", "err", err2)
+			}
 		}
 		e.tap = objc.NewBlock(e.tapData)
 	}
 	e.done = e.newDone(e.gen.Load())
 	var startErr error
-	withPool(func() { startErr = e.start() })
+	for try := 1; ; try++ {
+		withPool(func() { startErr = e.start() })
+		if startErr == nil || try == startTries {
+			break
+		}
+		slog.Warn("audio: the engine didn't start; trying a new one", "try", try, "err", startErr)
+		withPool(e.teardown)
+		time.Sleep(300 * time.Millisecond)
+	}
 	if startErr != nil {
 		e.close()
 		return nil, startErr
@@ -66,6 +99,12 @@ func OpenVoice(cfg VoiceConfig) (*Voice, error) {
 	go e.watch()
 	return &Voice{e}, nil
 }
+
+// startTries is how many engines OpenVoice builds before it gives up.
+const startTries = 2
+
+// echoCancel reports whether the mic goes through voice processing.
+func (e *vpEngine) echoCancel() bool { return !e.cfg.SpeakerOnly && !e.cfg.NoEchoCancel }
 
 // completionRendered is AVAudioPlayerNodeCompletionDataRendered: the
 // handler runs once the player has rendered the buffer into the engine.
@@ -96,12 +135,20 @@ type vpEngine struct {
 
 	restoreSpeakers func() // puts the speakers back at their own rate
 
-	tapMu     sync.Mutex // the converter, between the tap and close
-	conv      *sdl.AudioStream
-	scratch   []float32 // the tap's: channel 0 of an interleaved buffer
-	convOut   []float32
-	tapLogged atomic.Bool
-	mic       *paced
+	micDev, spkDev uint32       // the devices asked for (0: the system's default)
+	names          atomic.Value // [2]string: the mic and speakers the engine runs on
+
+	tapMu      sync.Mutex // the converter, between the tap and close
+	conv       *sdl.AudioStream
+	scratch    []float32   // the tap's: one channel of an interleaved buffer
+	chanScr    [][]float32 // the tap's: each channel of an interleaved buffer
+	chans      [][]float32 // the tap's: each channel of the buffer
+	pick       loudest     // the tap's, without voice processing
+	tapChans   atomic.Int64
+	micChannel atomic.Int64
+	convOut    []float32
+	tapLogged  atomic.Bool
+	mic        *paced
 
 	// For the watchdog, in Unix nanoseconds: when the engine last started,
 	// when the tap last delivered, and since when the oldest scheduled
@@ -134,6 +181,8 @@ func (e *vpEngine) start() error {
 	}
 	if !e.cfg.SpeakerOnly {
 		e.input = e.engine.Send(sel.inputNode)
+	}
+	if e.echoCancel() {
 		var nerr objc.ID
 		if !objc.Send[bool](e.input, sel.setVoiceProcessingEnabledError, true, &nerr) {
 			return fmt.Errorf("turn on voice processing: %s", nsError(nerr))
@@ -152,14 +201,101 @@ func (e *vpEngine) start() error {
 			e.input.Send(sel.setOtherAudioDucking, duckingConfig{EnableAdvancedDucking: true, DuckingLevel: duckingMin})
 		}
 	}
+	e.output = e.engine.Send(sel.outputNode)
+	if err := e.setDevices(); err != nil {
+		return err
+	}
+	if e.echoCancel() {
+		e.waitForVPDevice()
+	}
 	e.player = objc.ID(cls.playerNode).Send(sel.alloc).Send(sel.init)
 	e.engine.Send(sel.attachNode, e.player)
 	e.fmtOut = objc.ID(cls.format).Send(sel.alloc).Send(sel.initWithCommonFormat, uint(pcmFormatFloat32), float64(e.cfg.SpeakerRate), uint32(1), false)
-	e.output = e.engine.Send(sel.outputNode)
 	if err := e.wire(); err != nil {
 		return err
 	}
 	return e.run()
+}
+
+// setDevices points the engine at the devices asked for. With voice
+// processing one unit does both sides: the mic is its element 1 and the
+// speakers its element 0, as Chromium sets up its own voice processing
+// unit. Without it the input and output nodes each have a unit of their
+// own, set on element 0. Call inside withPool.
+func (e *vpEngine) setDevices() error {
+	if e.micDev != 0 && e.input != 0 {
+		el := uint32(auElementOutput)
+		if e.echoCancel() {
+			el = auElementInput
+		}
+		if err := setUnitDevice(objc.Send[uintptr](e.input, sel.audioUnit), el, e.micDev); err != nil {
+			return fmt.Errorf("choose the mic: %w", err)
+		}
+	}
+	if e.spkDev != 0 {
+		out := objc.Send[uintptr](e.output, sel.audioUnit)
+		if e.echoCancel() {
+			if in := objc.Send[uintptr](e.input, sel.audioUnit); in != out {
+				if err := setUnitDevice(in, auElementOutput, e.spkDev); err != nil {
+					return fmt.Errorf("choose the speakers: %w", err)
+				}
+			}
+		}
+		if err := setUnitDevice(out, auElementOutput, e.spkDev); err != nil {
+			return fmt.Errorf("choose the speakers: %w", err)
+		}
+	}
+	return nil
+}
+
+// vpDeviceWait is how long start waits for voice processing's device.
+const vpDeviceWait = 2 * time.Second
+
+// waitForVPDevice waits for the device voice processing builds out of the
+// mic and the speakers to have a format. Until it does, the input node's
+// device side reads 0 Hz with no channels, and an engine wired then fails
+// to start with 'bfmt' (1650879860): the formats it was given don't match
+// the device that turns up. Seen on a USB interface that is both mic and
+// speakers (2 in, 2 out, 44.1 kHz), where most starts failed so and one
+// came up with a 4-channel device side; the built-in mic's is ready at
+// once. Call inside withPool.
+func (e *vpEngine) waitForVPDevice() {
+	start := time.Now()
+	for {
+		f := e.input.Send(sel.inputFormatForBus, uint(0))
+		if f != 0 && objc.Send[float64](f, sel.sampleRate) > 0 && objc.Send[uint32](f, sel.channelCount) > 0 {
+			if waited := time.Since(start); waited > 20*time.Millisecond {
+				slog.Info("audio: voice processing's device is ready", "waited", waited.Round(time.Millisecond), "format", formatDesc(f))
+			}
+			return
+		}
+		if time.Since(start) >= vpDeviceWait {
+			slog.Warn("audio: voice processing's device has no format yet; starting anyway", "waited", vpDeviceWait)
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// noteDevices reads back the devices the engine runs on, for Info and the
+// log. Call inside withPool.
+func (e *vpEngine) noteDevices() {
+	var mic string
+	if e.input != 0 {
+		el := uint32(auElementOutput)
+		if e.echoCancel() {
+			el = auElementInput
+		}
+		if loadDevices() == nil {
+			mic = deviceName(unitDevice(objc.Send[uintptr](e.input, sel.audioUnit), el))
+		}
+	}
+	var spk string
+	if loadDevices() == nil {
+		spk = deviceName(unitDevice(objc.Send[uintptr](e.output, sel.audioUnit), auElementOutput))
+	}
+	e.names.Store([2]string{mic, spk})
+	slog.Info("audio: devices", "mic", mic, "speakers", spk, "echoCancel", e.echoCancel(), "askedMic", e.cfg.Mic != "", "askedSpeakers", e.cfg.Speakers != "")
 }
 
 // wire connects the player to the mixer and the mixer to the output, and
@@ -172,6 +308,11 @@ func (e *vpEngine) wire() error {
 	if e.cfg.SpeakerOnly {
 		slog.Info("audio: speakers only", "player", formatDesc(e.fmtOut), "speakerDevice", formatDesc(spkDevice))
 		return nil
+	}
+	if !e.echoCancel() {
+		slog.Info("audio: mic without echo cancelling", "mic", formatDesc(e.input.Send(sel.outputFormatForBus, uint(0))),
+			"speakerDevice", formatDesc(spkDevice), "player", formatDesc(e.fmtOut))
+		return e.installTap()
 	}
 	// Voice processing needs the audio it plays and the audio it records
 	// at the same rate on our side ("client-side input and output formats
@@ -225,6 +366,7 @@ func (e *vpEngine) installTap() error {
 	if err := e.setMicRate(int(rate)); err != nil {
 		return err
 	}
+	e.tapChans.Store(int64(max(objc.Send[uint32](f, sel.channelCount), 1)))
 	// Asks for 10 ms; AVAudioEngine delivers 100 ms at a time regardless.
 	e.input.Send(sel.installTap, uint(0), uint32(rate/100), f, e.tap)
 	e.tapped = true
@@ -252,8 +394,14 @@ func (e *vpEngine) run() error {
 	e.tapLogged.Store(false)
 	e.heardLogged.Store(false)
 	e.latency.Store(int64(objc.Send[float64](e.output, sel.presentationLatency) * float64(time.Second)))
+	e.noteDevices()
 	if e.cfg.SpeakerOnly {
 		slog.Info("audio: speakers on", "rate", e.cfg.SpeakerRate, "outputLatency", time.Duration(e.latency.Load()), "queue", e.cfg.Queue)
+		return nil
+	}
+	if !e.echoCancel() {
+		slog.Info("audio: mic on, no echo cancelling", "deviceMicRate", e.micRate.Load(), "channels", e.tapChans.Load(), "micRate", e.cfg.MicRate,
+			"speakerRate", e.cfg.SpeakerRate, "outputLatency", time.Duration(e.latency.Load()), "queue", e.cfg.Queue)
 		return nil
 	}
 	slog.Info("audio: voice processing on", "deviceMicRate", e.micRate.Load(), "micRate", e.cfg.MicRate, "speakerRate", e.cfg.SpeakerRate,
@@ -287,8 +435,10 @@ func (e *vpEngine) setMicRate(rate int) error {
 	return nil
 }
 
-// tapData is the input tap: channel 0 of each buffer, converted, goes to
-// the paced queue Read takes from.
+// tapData is the input tap: one channel of each buffer, converted, goes to
+// the paced queue Read takes from. With voice processing that is channel
+// 0, the cleaned mic; without, the loudest (an audio interface's mic can
+// be on any of its inputs).
 func (e *vpEngine) tapData(_ objc.Block, buf, _ objc.ID) {
 	n := int(objc.Send[uint32](buf, sel.frameLength))
 	data := objc.Send[**float32](buf, sel.floatChannelData)
@@ -304,14 +454,7 @@ func (e *vpEngine) tapData(_ objc.Block, buf, _ objc.ID) {
 		rate := max(e.micRate.Load(), 1)
 		slog.Info("audio: voice processing mic", "frames", n, "every", time.Duration(int64(n)*int64(time.Second)/rate), "stride", stride)
 	}
-	samples := unsafe.Slice(*data, n*stride)
-	if stride > 1 {
-		e.scratch = e.scratch[:0]
-		for i := 0; i < n; i++ {
-			e.scratch = append(e.scratch, samples[i*stride])
-		}
-		samples = e.scratch
-	}
+	samples := e.tapChannel(data, n, stride)
 	e.tapMu.Lock()
 	defer e.tapMu.Unlock()
 	if e.conv == nil {
@@ -331,6 +474,50 @@ func (e *vpEngine) tapData(_ objc.Block, buf, _ objc.ID) {
 		return
 	}
 	e.mic.push(out[:got/4], now)
+}
+
+// tapChannel is the channel of a tap's buffer to use: n frames, either
+// interleaved (stride > 1, every channel in data[0]) or one pointer per
+// channel (AVAudioEngine's standard format).
+func (e *vpEngine) tapChannel(data **float32, n, stride int) []float32 {
+	chans := int(e.tapChans.Load())
+	if stride > 1 {
+		chans = stride
+	}
+	ch := 0
+	if !e.echoCancel() && chans > 1 {
+		e.chans = e.chans[:0]
+		if stride > 1 {
+			all := unsafe.Slice(*data, n*stride)
+			for len(e.chanScr) < chans {
+				e.chanScr = append(e.chanScr, nil)
+			}
+			for c := range chans {
+				s := e.chanScr[c][:0]
+				for i := 0; i < n; i++ {
+					s = append(s, all[i*stride+c])
+				}
+				e.chanScr[c] = s
+				e.chans = append(e.chans, s)
+			}
+		} else {
+			for _, p := range unsafe.Slice(data, chans) {
+				e.chans = append(e.chans, unsafe.Slice(p, n))
+			}
+		}
+		ch = e.pick.update(e.chans)
+		e.micChannel.Store(int64(ch))
+		return e.chans[ch]
+	}
+	if stride <= 1 {
+		return unsafe.Slice(*data, n)
+	}
+	all := unsafe.Slice(*data, n*stride)
+	e.scratch = e.scratch[:0]
+	for i := 0; i < n; i++ {
+		e.scratch = append(e.scratch, all[i*stride])
+	}
+	return e.scratch
 }
 
 // newDone makes the completion handler for buffers scheduled in generation
@@ -627,17 +814,22 @@ func (e *vpEngine) schedule(frame []float32) error {
 }
 
 func (e *vpEngine) info() VoiceInfo {
+	names, _ := e.names.Load().([2]string)
 	return VoiceInfo{
-		SpeakerOnly:  e.cfg.SpeakerOnly,
-		DeviceMic:    int(e.micRate.Load()),
-		Latency:      time.Duration(e.latency.Load()),
-		Queued:       time.Duration(e.queued.Load()) * time.Second / time.Duration(e.cfg.SpeakerRate),
-		Written:      time.Duration(e.written.Load()) * time.Second / time.Duration(e.cfg.SpeakerRate),
-		Dropped:      time.Duration(e.dropped.Load()) * time.Second / time.Duration(e.cfg.SpeakerRate),
-		MicHeld:      e.micHeld(),
-		FirstRender:  e.heardLogged.Load(),
-		EngineAlive:  e.alive(),
-		VoiceProcess: !e.cfg.SpeakerOnly,
+		SpeakerOnly: e.cfg.SpeakerOnly,
+		EchoCancel:  e.echoCancel(),
+		MicName:     names[0],
+		SpeakerName: names[1],
+		MicChannel:  int(e.micChannel.Load()),
+		MicChannels: int(e.tapChans.Load()),
+		DeviceMic:   int(e.micRate.Load()),
+		Latency:     time.Duration(e.latency.Load()),
+		Queued:      time.Duration(e.queued.Load()) * time.Second / time.Duration(e.cfg.SpeakerRate),
+		Written:     time.Duration(e.written.Load()) * time.Second / time.Duration(e.cfg.SpeakerRate),
+		Dropped:     time.Duration(e.dropped.Load()) * time.Second / time.Duration(e.cfg.SpeakerRate),
+		MicHeld:     e.micHeld(),
+		FirstRender: e.heardLogged.Load(),
+		EngineAlive: e.alive(),
 	}
 }
 
@@ -707,7 +899,7 @@ var sel struct {
 	presentationLatency, initWithCommonFormat, sampleRate                                                     objc.SEL
 	initWithPCMFormat, setFrameLength, frameLength                                                            objc.SEL
 	floatChannelData, stride, play, scheduleBuffer                                                            objc.SEL
-	localizedDescription, utf8String, code                                                                    objc.SEL
+	localizedDescription, utf8String, code, audioUnit                                                         objc.SEL
 }
 
 // loadAVF loads AVFAudio and looks up the classes and selectors once.
@@ -790,6 +982,7 @@ func loadAVFOnce() error {
 		{&sel.localizedDescription, "localizedDescription"},
 		{&sel.utf8String, "UTF8String"},
 		{&sel.code, "code"},
+		{&sel.audioUnit, "audioUnit"},
 	} {
 		*s.dst = objc.RegisterName(s.name)
 	}

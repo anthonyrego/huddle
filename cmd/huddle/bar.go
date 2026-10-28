@@ -2,12 +2,14 @@ package main
 
 // The bar along the bottom of the meeting window: the room and who you
 // are, then the voice session: who's in the room (a dot lights while they
-// talk), and the mic, which m or a click mutes.
+// talk), the mic, which m or a click mutes, and the ⌃ that opens the
+// device menu (devmenu.go).
 
 import (
 	"strings"
 
 	"github.com/anthonyrego/huddle/internal/draw"
+	"github.com/anthonyrego/huddle/internal/platform/audio"
 	"github.com/anthonyrego/huddle/internal/rtc"
 	"github.com/anthonyrego/huddle/internal/text"
 	"github.com/anthonyrego/huddle/internal/ui"
@@ -43,19 +45,39 @@ func (s *meetingScene) drawBar(c *ui.Ctx, l *draw.List, r draw.Rect) {
 	hint := s.tc.lay(c, "f  fit", text.SansRegular, 11.5)
 	right -= hint.Width
 	drawAt(l, hint, right, r.Y+(r.H-hint.Height)/2, c.Pal.TextFaint)
-	s.muteRect = draw.Rect{}
+	s.muteRect, s.devRect = draw.Rect{}, draw.Rect{}
 	if s.call == nil {
 		return
 	}
 	v := s.call.snapshot()
-	right = s.drawMic(c, l, v, right-16, r)
+	right = s.drawDevices(c, l, right-16, r)
+	right = s.drawMic(c, l, v, right-6, r)
 	s.drawPeople(c, l, v, x, right-12, r)
+}
+
+// drawDevices draws the button that opens the device menu, ending at
+// right, and returns where it starts.
+func (s *meetingScene) drawDevices(c *ui.Ctx, l *draw.List, right float32, r draw.Rect) float32 {
+	h := float32(28)
+	b := draw.Rect{X: right - h, Y: r.Y + (r.H-h)/2, W: h, H: h}
+	fill, stroke, col := c.Pal.Surface, c.Pal.Border, c.Pal.TextMuted
+	if s.menu.open {
+		fill, stroke, col = c.Pal.SurfaceAlt, c.Pal.Accent, c.Pal.Accent
+	}
+	l.BorderedRect(b, fill, stroke, 1, draw.Uniform(h/2))
+	cx, cy := b.X+h/2, b.Y+h/2
+	l.Path(draw.Path{Points: []draw.Point{{X: cx - 4.5, Y: cy + 2}, {X: cx, Y: cy - 2.5}, {X: cx + 4.5, Y: cy + 2}}, Stroke: col, Width: 1.6})
+	s.devRect = b
+	return b.X
 }
 
 // drawMic draws the mic control ending at right and returns where it
 // starts.
 func (s *meetingScene) drawMic(c *ui.Ctx, l *draw.List, v callState, right float32, r draw.Rect) float32 {
 	label := v.status
+	if v.noEcho && v.status == callOn {
+		label = "Mic on · use headphones"
+	}
 	if v.canMute {
 		label += "  ·  m"
 	}
@@ -66,6 +88,9 @@ func (s *meetingScene) drawMic(c *ui.Ctx, l *draw.List, v callState, right float
 	switch v.status {
 	case callOn:
 		dot = c.Pal.Success
+		if v.noEcho {
+			dot = c.Pal.Warning
+		}
 		if v.talking[v.self] {
 			dot = c.Pal.Accent
 		}
@@ -73,7 +98,7 @@ func (s *meetingScene) drawMic(c *ui.Ctx, l *draw.List, v callState, right float
 		dot, col = c.Pal.Error, c.Pal.Error
 	case callLost:
 		dot, col = c.Pal.Error, c.Pal.TextMuted
-	case callListening, callJoining:
+	case callListening, callJoining, callSwitching:
 		col = c.Pal.TextMuted
 	}
 	l.BorderedRect(pill, fill, c.Pal.Border, 1, draw.Uniform(h/2))
@@ -151,7 +176,8 @@ func itoa(n int) string {
 	return itoa(n/10) + string(rune('0'+n%10))
 }
 
-// barEvent handles the bar's input: m, or a click on the mic, mutes.
+// barEvent handles the bar's input: m, or a click on the mic, mutes; d, or
+// a click on the ⌃ beside it, opens the device menu.
 func (s *meetingScene) barEvent(e ui.Event) bool {
 	if s.call == nil {
 		return false
@@ -161,6 +187,10 @@ func (s *meetingScene) barEvent(e ui.Event) bool {
 		return s.call.toggleMute()
 	case e.Kind == ui.PointerDown && e.Button == 1 && s.muteRect.W > 0 && s.muteRect.Contains(e.Pos):
 		return s.call.toggleMute()
+	case e.Kind == ui.KeyPress && e.Mods == 0 && e.Key == 'd' && !e.Repeat,
+		e.Kind == ui.PointerDown && e.Button == 1 && s.devRect.W > 0 && s.devRect.Contains(e.Pos):
+		s.openMenu(audio.VoiceDevices())
+		return true
 	}
 	return false
 }

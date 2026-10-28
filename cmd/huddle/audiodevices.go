@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/anthonyrego/huddle/internal/platform"
@@ -11,12 +12,13 @@ import (
 )
 
 func init() {
-	register(&command{name: "audio-devices", summary: "list audio devices and the voice processing path, and open the speakers once (never the mic)", run: runAudioDevices})
+	register(&command{name: "audio-devices", summary: "list audio devices and the voice processing path, and open the speakers once (never the mic; -speakers picks which)", run: runAudioDevices})
 }
 
 func runAudioDevices(args []string) error {
 	fs := flag.NewFlagSet("audio-devices", flag.ContinueOnError)
 	play := fs.Duration("play", 500*time.Millisecond, "how long to play silence through the speakers")
+	speakers := fs.String("speakers", "", "open these speakers (a UID from the list, or a name) instead of the system's default")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -37,6 +39,33 @@ func runAudioDevices(args []string) error {
 	}
 	show("playback", playback)
 	show("recording", rec)
+
+	// What the device menu offers, from CoreAudio (nothing opened).
+	devs, err := audio.VoiceDevices()
+	if err != nil {
+		return fmt.Errorf("devices: %w", err)
+	}
+	fmt.Printf("\ndevices (the device menu's; * the system default):\n")
+	for _, d := range devs {
+		mark := func(on bool) string {
+			if on {
+				return "*"
+			}
+			return " "
+		}
+		fmt.Printf("  %-34s in %d%s out %d%s %6.0f Hz  %-11s %s\n", d.Name, d.In, mark(d.DefaultIn), d.Out, mark(d.DefaultOut), d.Rate, d.Transport, d.UID)
+	}
+	spkUID := ""
+	if *speakers != "" {
+		for _, d := range devs {
+			if d.Out > 0 && (d.UID == *speakers || strings.EqualFold(d.Name, *speakers)) {
+				spkUID = d.UID
+			}
+		}
+		if spkUID == "" {
+			return fmt.Errorf("no speakers %q in the list", *speakers)
+		}
+	}
 
 	// The voice path, read from CoreAudio without opening a device.
 	in, out, err := audio.Defaults()
@@ -59,7 +88,7 @@ func runAudioDevices(args []string) error {
 	fmt.Printf("  the mic arrives in 100 ms taps and is paced out in 10 ms frames; the player keeps ~%v queued\n", 50*time.Millisecond)
 
 	// The speakers alone, through the same player the voice path uses.
-	cfg.SpeakerOnly = true
+	cfg.SpeakerOnly, cfg.Speakers = true, spkUID
 	v, err := audio.OpenVoice(cfg)
 	if err != nil {
 		return err
@@ -76,10 +105,14 @@ func runAudioDevices(args []string) error {
 	took := time.Since(start)
 	micNow, _ := audio.InputRunning()
 	info := v.Info()
-	fmt.Printf("\nspeakers open (alone: no mic, no voice processing): output latency %v\n", info.Latency.Round(100*time.Microsecond))
+	fmt.Printf("\nspeakers open on %s (alone: no mic, no voice processing): output latency %v\n", info.SpeakerName, info.Latency.Round(100*time.Microsecond))
 	fmt.Printf("  played %v of silence in %v, at most %v queued on the player, %v dropped\n",
 		info.Written, took.Round(time.Millisecond), most, info.Dropped)
-	fmt.Printf("  the mic in use by any app while the speakers played: %v (before: %v)\n", micNow, in.Running)
+	both := ""
+	if spkUID == "" && in.Name == out.Name {
+		both = " (the mic and the speakers are one device: this counts the speakers playing)"
+	}
+	fmt.Printf("  the mic's device in use by any app while the speakers played: %v (before: %v)%s\n", micNow, in.Running, both)
 	return nil
 }
 

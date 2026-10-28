@@ -123,3 +123,23 @@ func TestLineHeightMultiplier(t *testing.T) {
 		t.Errorf("height = %.1f, want 40", l.Height)
 	}
 }
+
+// TestEmbeddedShaperNeverFallsBack: a character the embedded faces lack
+// stays in the span's face (its missing glyph) instead of a system face.
+func TestEmbeddedShaperNeverFallsBack(t *testing.T) {
+	s, err := NewEmbeddedShaper()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := s.Layout([]Run{{Text: "Ship 🚀 日本 now", Style: Style{Font: SansRegular, Size: 14}}}, 0)
+	for _, ln := range l.Lines {
+		for _, r := range ln.Runs {
+			if r.Font >= FirstFallback {
+				t.Fatalf("run %q uses fallback font %d", r.Text, r.Font)
+			}
+		}
+	}
+	if l.Width <= 0 {
+		t.Fatal("no width")
+	}
+}

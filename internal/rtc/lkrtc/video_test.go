@@ -488,3 +488,33 @@ func TestFiller(t *testing.T) {
 		}
 	}
 }
+
+// TestSqueeze: a layer that just came back at its floor rides out one
+// overuse cut from GCC (to 0.85 of what arrived) instead of pausing.
+func TestSqueeze(t *testing.T) {
+	scr := &videoPub{}
+	var a allocator
+	now := time.Now()
+	a.add(scr, []int{2_500_000, 800_000}, now)
+	a.allocate(1_200_000, 0, now) // half size at once, full size waits
+	var on time.Time
+	for i := 1; i <= 30 && on.IsZero(); i++ {
+		at := now.Add(time.Duration(i) * 500 * time.Millisecond)
+		a.allocate(2_600_000, 840_000+min(i, 9)*120_000, at)
+		if got := a.bitrates(scr, 2); got[0] > 0 {
+			on = at
+		}
+	}
+	if on.IsZero() {
+		t.Fatal("the full size never came")
+	}
+	cut := int(0.85 * float64(800_000+1_000_000+audioReserve))
+	a.allocate(cut, 1_840_000, on.Add(300*time.Millisecond))
+	if got := a.bitrates(scr, 2); got[0] == 0 || got[1] != 800_000 {
+		t.Fatalf("after one cut to %d: %v", cut, got)
+	}
+	a.allocate(1_000_000, 1_500_000, on.Add(time.Second))
+	if got := a.bitrates(scr, 2); got[0] != 0 {
+		t.Fatalf("at 1 Mbps: %v", got)
+	}
+}

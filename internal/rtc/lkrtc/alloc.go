@@ -41,6 +41,12 @@ const (
 	// resumeMargin is how far over a paused layer's floor GCC's estimate
 	// must be to probe for it (or to start it fresh).
 	resumeMargin = 1.15
+	// pauseShare is how far under its floor a running layer may be squeezed
+	// before it pauses: GCC answers one overuse by cutting to 0.85 of what
+	// arrived, so a layer at its floor would pause at the first one (a
+	// keyframe's burst, say), and come back only after a probe. 0.7 rides
+	// out one cut for a camera's 720p or a screen's full size.
+	pauseShare = 0.7
 	// probeFor is how long a probe takes to rise to the layer's floor;
 	// probeFirst, while the estimate has never dropped.
 	probeFor   = 8 * time.Second
@@ -83,6 +89,9 @@ type allocLayer struct {
 }
 
 func (l *allocLayer) floor() int { return int(float64(l.full) * floorShare) }
+
+// squeezed is the least a running layer is given before it pauses.
+func (l *allocLayer) squeezed() int { return int(float64(l.floor()) * pauseShare) }
 
 // free reports whether the layer started too recently for the cap.
 func (l *allocLayer) free(now time.Time) bool { return !l.since.IsZero() && now.Sub(l.since) < freeFor }
@@ -160,14 +169,14 @@ func (a *allocator) allocate(raw, sent int, now time.Time) int {
 		case was > 0 && l.free(now):
 			// Just started: GCC's estimate (not the cap) says whether it fits.
 			switch {
-			case leftRaw < l.floor():
+			case leftRaw < l.squeezed():
 				l.bps = 0
 			case l.probed:
-				l.bps = l.floor() // what the probe showed fits
+				l.bps = min(l.floor(), leftRaw) // what the probe showed fits
 			default:
-				l.bps = min(l.full, max(leftFresh, l.floor()))
+				l.bps = min(l.full, max(leftFresh, min(l.floor(), leftRaw)))
 			}
-		case was > 0 && left >= l.floor():
+		case was > 0 && left >= l.squeezed():
 			l.bps = min(l.full, left)
 		case was == 0 && a.probe != nil && a.probe.target == l:
 			l.bps = a.probing(l, top, leftRaw, sent, now)

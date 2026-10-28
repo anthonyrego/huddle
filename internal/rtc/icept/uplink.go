@@ -1,4 +1,8 @@
-package lkrtc
+// Package icept holds the pion interceptors huddle's media connections use
+// on either end: a narrow uplink and a bad network for tests (the pacer and
+// congestion control join them as the media server's step 1 goes on).
+// Pure.
+package icept
 
 import (
 	"sync"
@@ -8,33 +12,34 @@ import (
 	"github.com/pion/rtp"
 )
 
-// uplinkFactory is a pion interceptor that makes the uplink narrow on
-// purpose, for tests: every RTP packet a peer connection sends goes
+// Uplink is a pion interceptor that makes the uplink narrow on purpose, for tests: every RTP packet a peer connection sends goes
 // through one token bucket at a fixed rate, with a queue of a fixed number
 // of packets in front of it (the tail is dropped when it's full), as a
 // home router's uplink would be (50 packets is dummynet's default
 // queue). It sits next to the network, after the pacer and the congestion
-// control, so the SFU sees the queueing as delay and the estimator hears
-// about it through the feedback, as it would from a real narrow link.
-type uplinkFactory struct {
-	bps   int // bits a second
-	slots int // packets the queue holds
-	made  func(*uplink)
+// control, so the far end sees the queueing as delay and the estimator
+// hears about it through the feedback, as it would from a real narrow link.
+type Uplink struct {
+	BPS   int // bits a second
+	Slots int // packets the queue holds (UplinkSlots)
+	// Made, when set, is given each connection's link as it's made.
+	Made func(*Link)
 }
 
-// uplinkSlots is the queue in front of the limit, in packets.
-const uplinkSlots = 50
+// UplinkSlots is the queue in front of the limit, in packets.
+const UplinkSlots = 50
 
-func (f *uplinkFactory) NewInterceptor(string) (interceptor.Interceptor, error) {
-	u := &uplink{bps: float64(f.bps), slots: f.slots, wake: make(chan struct{}, 1), done: make(chan struct{})}
-	if f.made != nil {
-		f.made(u)
+func (f *Uplink) NewInterceptor(string) (interceptor.Interceptor, error) {
+	u := &Link{bps: float64(f.BPS), slots: f.Slots, wake: make(chan struct{}, 1), done: make(chan struct{})}
+	if f.Made != nil {
+		f.Made(u)
 	}
 	go u.run()
 	return u, nil
 }
 
-type uplink struct {
+// Link is one connection's narrow uplink.
+type Link struct {
 	interceptor.NoOp
 	bps   float64
 	slots int
@@ -56,7 +61,7 @@ type shaped struct {
 	w    interceptor.RTPWriter
 }
 
-func (u *uplink) BindLocalStream(_ *interceptor.StreamInfo, w interceptor.RTPWriter) interceptor.RTPWriter {
+func (u *Link) BindLocalStream(_ *interceptor.StreamInfo, w interceptor.RTPWriter) interceptor.RTPWriter {
 	return interceptor.RTPWriterFunc(func(h *rtp.Header, payload []byte, attr interceptor.Attributes) (int, error) {
 		n := h.MarshalSize() + len(payload)
 		u.mu.Lock()
@@ -76,7 +81,7 @@ func (u *uplink) BindLocalStream(_ *interceptor.StreamInfo, w interceptor.RTPWri
 }
 
 // run lets packets through at the rate.
-func (u *uplink) run() {
+func (u *Link) run() {
 	t := time.NewTimer(time.Hour)
 	defer t.Stop()
 	for {
@@ -114,13 +119,13 @@ func (u *uplink) run() {
 }
 
 // Dropped is how many packets the queue had no room for.
-func (u *uplink) Dropped() int {
+func (u *Link) Dropped() int {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.dropped
 }
 
-func (u *uplink) Close() error {
+func (u *Link) Close() error {
 	u.once.Do(func() { close(u.done) })
 	return nil
 }

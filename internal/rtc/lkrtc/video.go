@@ -21,6 +21,7 @@ import (
 	"github.com/pion/webrtc/v4/pkg/media"
 
 	"github.com/anthonyrego/huddle/internal/rtc"
+	"github.com/anthonyrego/huddle/internal/rtc/icept"
 	"github.com/anthonyrego/huddle/internal/video"
 )
 
@@ -263,7 +264,7 @@ type videoCC struct {
 	pubs     []*videoPub
 	raw      int // GCC's estimate
 	usable   int // what the layers were given from
-	uplinks  []*uplink
+	uplinks  []*icept.Link
 	stopOnce sync.Once
 	quit     chan struct{}
 }
@@ -452,7 +453,7 @@ func VideoSendStats(rm rtc.Room) SendStats {
 	return s
 }
 
-func (v *videoCC) addUplink(u *uplink) {
+func (v *videoCC) addUplink(u *icept.Link) {
 	v.mu.Lock()
 	v.uplinks = append(v.uplinks, u)
 	v.mu.Unlock()

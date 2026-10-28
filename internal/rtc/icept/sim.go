@@ -1,25 +1,27 @@
-package lkrtc
+package icept
 
 import (
 	"io"
 	"sync"
-	"time"
 
 	"github.com/pion/interceptor"
 
 	"github.com/anthonyrego/huddle/internal/netsim"
 )
 
-// simFactory is a pion interceptor that makes every remote stream's network
-// worse on receive, through a netsim.Sim. lksdk registers our interceptors
-// ahead of its own (lksdk.WithInterceptors, keeping its defaults with
-// WithIncludeDefaultInterceptors), so this one sits next to the network:
-// RTCP receiver reports, the jitter buffer and everything after see the
+// Sim is a pion interceptor that makes every remote stream's network worse
+// on receive, through a netsim.Sim. It's registered ahead of the
+// connection's own interceptors, so it sits next to the network: RTCP
+// receiver reports, the jitter buffer and everything after see the
 // simulated loss and delay, as they would a bad network.
-type simFactory struct{ sim func() *netsim.Sim }
+type Sim struct {
+	// New is called once per remote stream; a nil or inactive Sim leaves
+	// that stream alone.
+	New func() *netsim.Sim
+}
 
-func (f simFactory) NewInterceptor(string) (interceptor.Interceptor, error) {
-	return &simInterceptor{sim: f.sim}, nil
+func (f Sim) NewInterceptor(string) (interceptor.Interceptor, error) {
+	return &simInterceptor{sim: f.New}, nil
 }
 
 type simInterceptor struct {
@@ -46,7 +48,7 @@ type simStream struct {
 
 func (i *simInterceptor) BindRemoteStream(info *interceptor.StreamInfo, reader interceptor.RTPReader) interceptor.RTPReader {
 	sim := i.sim()
-	if !sim.Active() {
+	if sim == nil || !sim.Active() {
 		return reader
 	}
 	s := &simStream{in: reader, out: make(chan packet, 512), err: make(chan error, 1), done: make(chan struct{})}
@@ -103,6 +105,3 @@ func (i *simInterceptor) Close() error {
 	}
 	return nil
 }
-
-// simSeed gives each simulated stream its own random numbers.
-func simSeed() uint64 { return uint64(time.Now().UnixNano()) }

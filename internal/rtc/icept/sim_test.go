@@ -1,4 +1,4 @@
-package lkrtc
+package icept
 
 import (
 	"encoding/binary"
@@ -14,7 +14,7 @@ import (
 // TestSimInterceptor reads a stream through the simulator: about the
 // asked-for share is lost, the rest arrives in order.
 func TestSimInterceptor(t *testing.T) {
-	f := simFactory{func() *netsim.Sim { return netsim.New(0.2, time.Millisecond, 0, 9) }}
+	f := Sim{func() *netsim.Sim { return netsim.New(0.2, time.Millisecond, 0, 9) }}
 	ic, err := f.NewInterceptor("")
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +48,7 @@ func TestSimInterceptor(t *testing.T) {
 	if ic.BindRemoteStream(nil, src) == nil {
 		t.Fatal("no reader")
 	}
-	off := simFactory{func() *netsim.Sim { return nil }}
+	off := Sim{func() *netsim.Sim { return nil }}
 	oi, _ := off.NewInterceptor("")
 	if r := oi.BindRemoteStream(&interceptor.StreamInfo{}, src); r == nil {
 		t.Fatal("an inactive sim should pass the reader through")

@@ -33,6 +33,7 @@ import (
 	"github.com/anthonyrego/huddle/internal/pcm"
 	"github.com/anthonyrego/huddle/internal/playout"
 	"github.com/anthonyrego/huddle/internal/rtc"
+	"github.com/anthonyrego/huddle/internal/rtc/icept"
 	"github.com/anthonyrego/huddle/internal/video"
 )
 
@@ -69,6 +70,9 @@ type Connector struct {
 func NewSim(loss float64, jitterAmount time.Duration, reorder float64) func() *netsim.Sim {
 	return func() *netsim.Sim { return netsim.New(loss, jitterAmount, reorder, simSeed()) }
 }
+
+// simSeed gives each simulated stream its own random numbers.
+func simSeed() uint64 { return uint64(time.Now().UnixNano()) }
 
 var logOnce sync.Once
 
@@ -154,10 +158,10 @@ func (c *Connector) Connect(ctx context.Context, j rtc.Join, ev rtc.Events) (rtc
 	// reports, receive-side TWCC) come after.
 	var ics []interceptor.Factory
 	if c.Sim != nil {
-		ics = append(ics, simFactory{c.Sim})
+		ics = append(ics, icept.Sim{New: c.Sim})
 	}
 	if c.Uplink > 0 {
-		ics = append(ics, &uplinkFactory{bps: c.Uplink, slots: uplinkSlots, made: r.cc.addUplink})
+		ics = append(ics, &icept.Uplink{BPS: c.Uplink, Slots: icept.UplinkSlots, Made: r.cc.addUplink})
 	}
 	ccf, err := newCC(r.cc.found)
 	if err != nil {

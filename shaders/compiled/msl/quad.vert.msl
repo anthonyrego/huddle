@@ -1,0 +1,106 @@
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
+#pragma clang diagnostic ignored "-Wmissing-braces"
+
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+template<typename T, size_t Num>
+struct spvUnsafeArray
+{
+    T elements[Num ? Num : 1];
+    
+    thread T& operator [] (size_t pos) thread
+    {
+        return elements[pos];
+    }
+    constexpr const thread T& operator [] (size_t pos) const thread
+    {
+        return elements[pos];
+    }
+    
+    device T& operator [] (size_t pos) device
+    {
+        return elements[pos];
+    }
+    constexpr const device T& operator [] (size_t pos) const device
+    {
+        return elements[pos];
+    }
+    
+    constexpr const constant T& operator [] (size_t pos) const constant
+    {
+        return elements[pos];
+    }
+    
+    threadgroup T& operator [] (size_t pos) threadgroup
+    {
+        return elements[pos];
+    }
+    constexpr const threadgroup T& operator [] (size_t pos) const threadgroup
+    {
+        return elements[pos];
+    }
+};
+
+struct Frame
+{
+    float4 Viewport;
+    float4 Transform;
+};
+
+constant spvUnsafeArray<float2, 6> _27 = spvUnsafeArray<float2, 6>({ float2(0.0), float2(1.0, 0.0), float2(0.0, 1.0), float2(1.0, 0.0), float2(1.0), float2(0.0, 1.0) });
+
+struct main0_out
+{
+    float2 _entryPointOutput_Local [[user(locn0)]];
+    float2 _entryPointOutput_HalfSize [[user(locn1)]];
+    float2 _entryPointOutput_UV [[user(locn2)]];
+    float4 _entryPointOutput_Color [[user(locn3)]];
+    float4 _entryPointOutput_BorderColor [[user(locn4)]];
+    float4 _entryPointOutput_Radii [[user(locn5)]];
+    float4 _entryPointOutput_Params [[user(locn6)]];
+    float4 _entryPointOutput_P0 [[user(locn7)]];
+    float4 _entryPointOutput_P1 [[user(locn8)]];
+    float4 gl_Position [[position]];
+};
+
+struct main0_in
+{
+    float4 input_Rect [[attribute(0)]];
+    float4 input_UV [[attribute(1)]];
+    float4 input_Color [[attribute(2)]];
+    float4 input_BorderColor [[attribute(3)]];
+    float4 input_Radii [[attribute(4)]];
+    float4 input_Params [[attribute(5)]];
+};
+
+vertex main0_out main0(main0_in in [[stage_in]], constant Frame& _41 [[buffer(0)]], uint gl_VertexIndex [[vertex_id]])
+{
+    main0_out out = {};
+    float _292 = in.input_Params.y / _41.Transform.x;
+    float2 _310 = (in.input_Rect.xy - float2(_292)) + (_27[gl_VertexIndex] * (in.input_Rect.zw + float2(2.0 * _292)));
+    float4 _503;
+    if (int(in.input_Params.z + 0.5) == 6)
+    {
+        _503 = float4((in.input_UV.xy * _41.Transform.x) + _41.Transform.zw, in.input_UV.zw);
+    }
+    else
+    {
+        _503 = in.input_UV;
+    }
+    float2 _280 = ((((_310 * _41.Transform.xy) + _41.Transform.zw) / _41.Viewport.xy) * 2.0) - float2(1.0);
+    out._entryPointOutput_Local = (_310 - (in.input_Rect.xy + (in.input_Rect.zw * 0.5))) * _41.Transform.x;
+    out._entryPointOutput_HalfSize = (in.input_Rect.zw * 0.5) * _41.Transform.x;
+    out._entryPointOutput_UV = mix(in.input_UV.xy, in.input_UV.zw, _27[gl_VertexIndex]);
+    out._entryPointOutput_Color = in.input_Color;
+    out._entryPointOutput_BorderColor = in.input_BorderColor;
+    out._entryPointOutput_Radii = in.input_Radii * _41.Transform.x;
+    out._entryPointOutput_Params = float4(in.input_Params.x * _41.Transform.x, in.input_Params.y, in.input_Params.z, in.input_Params.w * _41.Transform.x);
+    out._entryPointOutput_P0 = (in.input_Radii * _41.Transform.x) + _41.Transform.zwzw;
+    out._entryPointOutput_P1 = _503;
+    out.gl_Position = float4(_280.x, -_280.y, 0.0, 1.0);
+    return out;
+}
+

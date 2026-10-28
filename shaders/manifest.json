@@ -1,0 +1,24 @@
+{
+  "tools": {
+    "glslang": "11:16.6.0",
+    "spirv-cross": "1.4.363.0"
+  },
+  "shaders": [
+    {
+      "source": "src/quad.frag.hlsl",
+      "sha256": "2a47bff1a3c6b32d2fdf897c12a84ae1a6c78e5a20d1cb8641bbef6b3e3097e1",
+      "outputs": {
+        "compiled/msl/quad.frag.msl": "334a344f831071aaa5d8718b9179b039322815a87b6fe27dd90c930873072000",
+        "compiled/spirv/quad.frag.spv": "c952a53788fc454cbe2eca985a95e33025933e018592b19a27e5ce2d669b80a1"
+      }
+    },
+    {
+      "source": "src/quad.vert.hlsl",
+      "sha256": "f4012377dad0708bd3799add3a6f2c22302882fb75791d0ff78d955ab4ebf8ee",
+      "outputs": {
+        "compiled/msl/quad.vert.msl": "b4bb805fa8843e897443362183ca4d7c497ac8c14e27ba94afc665bdc40b96bb",
+        "compiled/spirv/quad.vert.spv": "34fe306eac6fdbf66bd6090728f324f0aa607cb5701b0ce8a2cd8b6f32a89a78"
+      }
+    }
+  ]
+}

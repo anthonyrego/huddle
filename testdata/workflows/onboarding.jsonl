@@ -1,0 +1,19 @@
+{"op":"add_node","id":"hr_email","kind":"data","label":"New starter email from HR"}
+{"op":"add_node","id":"payroll","kind":"step","label":"Enter details in payroll","after":"hr_email"}
+{"op":"add_node","id":"badge","kind":"step","label":"Request a badge","after":"hr_email"}
+{"op":"add_node","id":"it_form","kind":"step","label":"Fill in the IT form","after":"hr_email"}
+{"op":"add_node","id":"retype","kind":"pain","label":"Same details typed three times","on":"payroll"}
+{"op":"add_node","id":"payroll_sys","kind":"tool","label":"ADP","on":"payroll"}
+{"op":"add_node","id":"which_badge","kind":"gap","label":"Who approves the badge?","after":"badge"}
+{"op":"rename","id":"which_badge","label":"Facilities approves it"}
+{"op":"add_node","id":"which_badge","kind":"person"}
+{"op":"add_node","id":"chase_it","kind":"step","label":"Chase IT until it's done","after":"it_form"}
+{"op":"add_node","id":"chase_pain","kind":"pain","label":"Three or four reminder emails","on":"chase_it"}
+{"op":"add_node","id":"confirm","kind":"step","label":"Tell the manager it's ready","after":"payroll"}
+{"op":"connect","from":"which_badge","to":"confirm"}
+{"op":"connect","from":"chase_it","to":"confirm"}
+{"op":"add_node","id":"manager","kind":"person","label":"Hiring manager","after":"confirm"}
+{"op":"group","id":"accounts","label":"Setting up accounts","members":["payroll","badge","it_form","which_badge","chase_it"]}
+{"op":"add_node","id":"ai_once","kind":"ai_opportunity","label":"Type it once, AI fills all three","on":"payroll"}
+{"op":"add_node","id":"ai_chase","kind":"ai_opportunity","label":"Reminders go out on their own","on":"chase_it"}
+{"op":"point_at","ids":["payroll","chase_it"]}

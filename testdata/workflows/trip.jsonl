@@ -1,0 +1,14 @@
+{"op":"add_node","id":"wedding","kind":"idea","label":"Sister's wedding in Portland","detail":"Saturday, Nov 14"}
+{"op":"add_node","id":"train","kind":"option","label":"Take the train","after":"wedding","detail":"about 4 hours"}
+{"op":"add_node","id":"drive","kind":"option","label":"Drive","after":"wedding","detail":"about 3 hours"}
+{"op":"add_node","id":"train_easy","kind":"pro","label":"Read or nap on the way","on":"train"}
+{"op":"add_node","id":"train_fixed","kind":"con","label":"Fixed times, no car there","on":"train"}
+{"op":"add_node","id":"drive_free","kind":"pro","label":"Leave whenever you like","on":"drive"}
+{"op":"add_node","id":"drive_late","kind":"con","label":"Driving home tired","on":"drive"}
+{"op":"add_node","id":"kids","kind":"question","label":"Bringing the kids?","after":"wedding"}
+{"op":"point_at","ids":["train"]}
+{"op":"add_node","id":"cascades","kind":"example","label":"Cascades, 8:20 am","on":"train"}
+{"op":"add_node","id":"parking","kind":"fact","label":"Venue parking","after":"drive","detail":"$25 a day"}
+{"op":"note","target":"drive","text":"plus about $60 of gas"}
+{"op":"add_node","id":"last_train","kind":"step","label":"Check the last train home","after":"train"}
+{"op":"group","id":"ways","label":"Two ways there","members":["train","drive"]}

@@ -1,0 +1,18 @@
+{"op":"add_node","id":"order_emails","kind":"data","label":"Weekend order emails","detail":"every Monday"}
+{"op":"add_node","id":"read_emails","kind":"step","label":"Go through each email","after":"order_emails"}
+{"op":"add_node","id":"copy_rows","kind":"step","label":"Copy order into Excel","after":"read_emails"}
+{"op":"add_node","id":"excel","kind":"tool","label":"Excel","on":"copy_rows"}
+{"op":"add_node","id":"copy_slow","kind":"pain","label":"Takes most of the morning","on":"copy_rows"}
+{"op":"add_node","id":"how_many","kind":"gap","label":"How many orders a week?","after":"copy_rows"}
+{"op":"point_at","ids":["copy_rows"]}
+{"op":"remove","ids":["how_many"]}
+{"op":"note","target":"copy_rows","text":"about 60 orders"}
+{"op":"add_node","id":"summary","kind":"step","label":"Email warehouse a summary","after":"copy_rows"}
+{"op":"add_node","id":"warehouse","kind":"person","label":"Warehouse team","after":"summary"}
+{"op":"add_node","id":"odd_orders","kind":"decision","label":"Anything unusual?","after":"read_emails"}
+{"op":"connect","from":"odd_orders","to":"copy_rows","label":"no"}
+{"op":"add_node","id":"call_customer","kind":"step","label":"Call the customer","after":"odd_orders"}
+{"op":"connect","from":"call_customer","to":"copy_rows"}
+{"op":"add_node","id":"ai_rows","kind":"ai_opportunity","label":"AI fills the rows, you check them","on":"copy_rows"}
+{"op":"add_node","id":"ai_summary","kind":"ai_opportunity","label":"Draft the summary from the sheet","on":"summary"}
+{"op":"group","id":"monday","label":"Monday morning","members":["read_emails","odd_orders","copy_rows","call_customer"]}

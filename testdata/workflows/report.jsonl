@@ -1,0 +1,18 @@
+{"op":"add_node","id":"sales_sheet","kind":"data","label":"Sales spreadsheet"}
+{"op":"add_node","id":"crm_export","kind":"data","label":"CRM export"}
+{"op":"add_node","id":"returns_sheet","kind":"data","label":"Returns log"}
+{"op":"add_node","id":"merge","kind":"step","label":"Paste into one sheet","after":"sales_sheet","detail":"every Friday"}
+{"op":"connect","from":"crm_export","to":"merge"}
+{"op":"connect","from":"returns_sheet","to":"merge"}
+{"op":"add_node","id":"merge_pain","kind":"pain","label":"Columns never line up","on":"merge"}
+{"op":"add_node","id":"check_numbers","kind":"decision","label":"Do totals match last week?","after":"merge"}
+{"op":"add_node","id":"fix_rows","kind":"step","label":"Hunt down the bad rows","after":"check_numbers"}
+{"op":"connect","from":"fix_rows","to":"check_numbers","label":"recheck"}
+{"op":"add_node","id":"charts","kind":"step","label":"Make the charts","after":"check_numbers"}
+{"op":"add_node","id":"send_boss","kind":"step","label":"Email it to my boss","after":"charts"}
+{"op":"add_node","id":"boss","kind":"person","label":"Regional manager","after":"send_boss"}
+{"op":"group","id":"gather","label":"Gathering","members":["sales_sheet","crm_export","returns_sheet"]}
+{"op":"point_at","ids":["merge","check_numbers"]}
+{"op":"add_node","id":"ai_merge","kind":"ai_opportunity","label":"AI matches the columns","on":"merge"}
+{"op":"add_node","id":"ai_charts","kind":"ai_opportunity","label":"Charts and a first draft","on":"charts"}
+{"op":"rename","id":"charts","label":"Make the same 4 charts"}

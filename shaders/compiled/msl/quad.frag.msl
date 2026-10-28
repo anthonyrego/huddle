@@ -1,0 +1,255 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct Text
+{
+    float4 TextParams;
+};
+
+struct main0_out
+{
+    float4 _entryPointOutput [[color(0)]];
+};
+
+struct main0_in
+{
+    float2 input_Local [[user(locn0)]];
+    float2 input_HalfSize [[user(locn1)]];
+    float2 input_UV [[user(locn2)]];
+    float4 input_Color [[user(locn3)]];
+    float4 input_BorderColor [[user(locn4)]];
+    float4 input_Radii [[user(locn5)]];
+    float4 input_Params [[user(locn6)]];
+    float4 input_P0 [[user(locn7), flat]];
+    float4 input_P1 [[user(locn8), flat]];
+};
+
+fragment main0_out main0(main0_in in [[stage_in]], constant Text& _129 [[buffer(0)]], texture2d<float> GlyphAtlas [[texture(0)]], texture2d<float> ColorAtlas [[texture(1)]], texture2d<float> Image [[texture(2)]], sampler GlyphSampler [[sampler(0)]], sampler ColorSampler [[sampler(1)]], sampler ImageSampler [[sampler(2)]], float4 gl_FragCoord [[position]])
+{
+    main0_out out = {};
+    float4 _1658;
+    do
+    {
+        int _814 = int(in.input_Params.z + 0.5);
+        float _1017 = (in.input_Local.x > 0.0) ? ((in.input_Local.y > 0.0) ? in.input_Radii.z : in.input_Radii.y) : ((in.input_Local.y > 0.0) ? in.input_Radii.w : in.input_Radii.x);
+        float2 _1024 = (abs(in.input_Local) - in.input_HalfSize) + float2(_1017);
+        float2 _995 = _1024;
+        float _1036 = (fast::min(fast::max(_995.x, _995.y), 0.0) + length(fast::max(_1024, float2(0.0)))) - _1017;
+        if (_814 == 0)
+        {
+            float4 _772 = in.input_Color;
+            if (in.input_Params.x > 0.0)
+            {
+                _772 = mix(in.input_BorderColor, in.input_Color, float4(fast::clamp(0.5 - (_1036 + in.input_Params.x), 0.0, 1.0)));
+            }
+            float _851 = _772.w * fast::clamp(0.5 - _1036, 0.0, 1.0);
+            _1658 = float4(_772.xyz * _851, _851);
+            break;
+        }
+        if (_814 == 1)
+        {
+            float _860 = fast::max(in.input_Params.w, 0.5);
+            float _870 = in.input_Color.w * (1.0 - smoothstep(-_860, _860, _1036));
+            _1658 = float4(in.input_Color.xyz * _870, _870);
+            break;
+        }
+        if (_814 == 2)
+        {
+            float4 _883 = GlyphAtlas.sample(GlyphSampler, in.input_UV);
+            float _884 = _883.x;
+            float _1656;
+            if (_129.TextParams.x != 1.0)
+            {
+                float _1075 = 1.0 / _129.TextParams.x;
+                _1656 = mix(1.0 - powr(1.0 - _884, _1075), powr(_884, _1075), dot(in.input_Color.xyz, float3(0.2125999927520751953125, 0.715200006961822509765625, 0.072200000286102294921875)));
+            }
+            else
+            {
+                _1656 = _884;
+            }
+            float _1099 = (_1656 * (_129.TextParams.y + 1.0)) / ((_1656 * _129.TextParams.y) + 1.0);
+            float _1657;
+            if (_129.TextParams.z != 1.0)
+            {
+                _1657 = powr(_1099, 1.0 / _129.TextParams.z);
+            }
+            else
+            {
+                _1657 = _1099;
+            }
+            float _892 = in.input_Color.w * fast::clamp(_1657, 0.0, 1.0);
+            _1658 = float4(in.input_Color.xyz * _892, _892);
+            break;
+        }
+        if (_814 == 3)
+        {
+            _1658 = ColorAtlas.sample(ColorSampler, in.input_UV) * in.input_Color.w;
+            break;
+        }
+        if (_814 == 5)
+        {
+            float _1655;
+            do
+            {
+                if (dot(gl_FragCoord.xy - in.input_P0.xy, in.input_P1.xy) < 0.0)
+                {
+                    _1655 = 1000000.0;
+                    break;
+                }
+                if ((dot(in.input_P1.zw, in.input_P1.zw) > 0.0) && (dot(gl_FragCoord.xy - in.input_P0.zw, in.input_P1.zw) >= 0.0))
+                {
+                    _1655 = 1000000.0;
+                    break;
+                }
+                float2 _1159 = in.input_P0.zw - in.input_P0.xy;
+                float _1161 = length(_1159);
+                float2 _1169 = select(float2(1.0, 0.0), _1159 / float2(_1161), bool2(_1161 > 0.0));
+                float2 _1127 = _1169;
+                float2 _1172 = gl_FragCoord.xy - in.input_P0.xy;
+                float2 _1128 = _1172;
+                float _1175 = dot(_1172, _1169);
+                float _1177 = 0.5 * in.input_Params.x;
+                float _1191 = abs((_1127.x * _1128.y) - (_1127.y * _1128.x)) - _1177;
+                float _1651;
+                if (in.input_BorderColor.x > 0.5)
+                {
+                    _1651 = fast::max(_1191, -_1175);
+                }
+                else
+                {
+                    float _1652;
+                    if (_1175 < 0.0)
+                    {
+                        _1652 = length(_1172) - _1177;
+                    }
+                    else
+                    {
+                        _1652 = _1191;
+                    }
+                    _1651 = _1652;
+                }
+                float _1653;
+                if (in.input_BorderColor.y > 0.5)
+                {
+                    _1653 = fast::max(_1651, _1175 - _1161);
+                }
+                else
+                {
+                    float _1654;
+                    if (_1175 > _1161)
+                    {
+                        _1654 = length(gl_FragCoord.xy - in.input_P0.zw) - _1177;
+                    }
+                    else
+                    {
+                        _1654 = _1651;
+                    }
+                    _1653 = _1654;
+                }
+                _1655 = _1653;
+                break;
+            } while(false);
+            float _942 = in.input_Color.w * fast::clamp(0.5 - _1655, 0.0, 1.0);
+            _1658 = float4(in.input_Color.xyz * _942, _942);
+            break;
+        }
+        if (_814 == 6)
+        {
+            float3 _801 = in.input_BorderColor.xyz;
+            float2 _1243 = in.input_P0.zw - in.input_P0.xy;
+            float2 _1244 = in.input_P1.xy - in.input_P0.xy;
+            float _1282 = (((_1243.x * _1244.y) - (_1243.y * _1244.x)) >= 0.0) ? 1.0 : (-1.0);
+            float2 _1247 = in.input_P0.xy;
+            float2 _1248 = in.input_P0.zw;
+            float2 _1249 = gl_FragCoord.xy;
+            float _1648;
+            do
+            {
+                bool _1339 = (_1248.x < _1247.x) || ((_1248.x == _1247.x) && (_1248.y < _1247.y));
+                float2 _1344 = select(in.input_P0.xy, in.input_P0.zw, bool2(_1339));
+                float2 _1315 = _1344;
+                float _1354 = _1339 ? (-_1282) : _1282;
+                float2 _1357 = select(in.input_P0.zw, in.input_P0.xy, bool2(_1339)) - _1344;
+                float2 _1318 = _1357;
+                float _1376 = _1354 * ((_1318.x * (_1249.y - _1315.y)) - (_1318.y * (_1249.x - _1315.x)));
+                if (_801.x > 0.5)
+                {
+                    _1648 = fast::clamp(0.5 + (_1376 / fast::max(length(_1357), 9.9999999747524270787835121154785e-07)), 0.0, 1.0);
+                    break;
+                }
+                if ((_1376 > 0.0) || ((_1376 == 0.0) && (_1354 > 0.0)))
+                {
+                    _1648 = 1.0;
+                    break;
+                }
+                _1648 = 0.0;
+                break;
+            } while(false);
+            float2 _1252 = in.input_P0.zw;
+            float2 _1253 = in.input_P1.xy;
+            float2 _1254 = gl_FragCoord.xy;
+            float _1649;
+            do
+            {
+                bool _1426 = (_1253.x < _1252.x) || ((_1253.x == _1252.x) && (_1253.y < _1252.y));
+                float2 _1431 = select(in.input_P0.zw, in.input_P1.xy, bool2(_1426));
+                float2 _1402 = _1431;
+                float _1441 = _1426 ? (-_1282) : _1282;
+                float2 _1444 = select(in.input_P1.xy, in.input_P0.zw, bool2(_1426)) - _1431;
+                float2 _1405 = _1444;
+                float _1463 = _1441 * ((_1405.x * (_1254.y - _1402.y)) - (_1405.y * (_1254.x - _1402.x)));
+                if (_801.y > 0.5)
+                {
+                    _1649 = fast::clamp(0.5 + (_1463 / fast::max(length(_1444), 9.9999999747524270787835121154785e-07)), 0.0, 1.0);
+                    break;
+                }
+                if ((_1463 > 0.0) || ((_1463 == 0.0) && (_1441 > 0.0)))
+                {
+                    _1649 = 1.0;
+                    break;
+                }
+                _1649 = 0.0;
+                break;
+            } while(false);
+            float2 _1257 = in.input_P1.xy;
+            float2 _1258 = in.input_P0.xy;
+            float2 _1259 = gl_FragCoord.xy;
+            float _1650;
+            do
+            {
+                bool _1513 = (_1258.x < _1257.x) || ((_1258.x == _1257.x) && (_1258.y < _1257.y));
+                float2 _1518 = select(in.input_P1.xy, in.input_P0.xy, bool2(_1513));
+                float2 _1489 = _1518;
+                float _1528 = _1513 ? (-_1282) : _1282;
+                float2 _1531 = select(in.input_P0.xy, in.input_P1.xy, bool2(_1513)) - _1518;
+                float2 _1492 = _1531;
+                float _1550 = _1528 * ((_1492.x * (_1259.y - _1489.y)) - (_1492.y * (_1259.x - _1489.x)));
+                if (_801.z > 0.5)
+                {
+                    _1650 = fast::clamp(0.5 + (_1550 / fast::max(length(_1531), 9.9999999747524270787835121154785e-07)), 0.0, 1.0);
+                    break;
+                }
+                if ((_1550 > 0.0) || ((_1550 == 0.0) && (_1528 > 0.0)))
+                {
+                    _1650 = 1.0;
+                    break;
+                }
+                _1650 = 0.0;
+                break;
+            } while(false);
+            float _969 = in.input_Color.w * fast::min(fast::min(_1648, _1649), _1650);
+            _1658 = float4(in.input_Color.xyz * _969, _969);
+            break;
+        }
+        float4 _979 = Image.sample(ImageSampler, in.input_UV);
+        float4 _804 = _979;
+        float _989 = (_804.w * in.input_Color.w) * fast::clamp(0.5 - _1036, 0.0, 1.0);
+        _1658 = float4(_979.xyz * _989, _989);
+        break;
+    } while(false);
+    out._entryPointOutput = _1658;
+    return out;
+}
+

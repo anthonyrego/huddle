@@ -88,9 +88,10 @@ func (r *lkRoom) count() int {
 	return len(r.people)
 }
 
-// publish writes one Opus packet to the voice track.
-func (r *lkRoom) publish(pkt []byte, d time.Duration) error {
-	return r.track.WriteSample(media.Sample{Data: pkt, Duration: d}, nil)
+// publish writes one 20 ms Opus packet to the voice track at RTP
+// timestamp ts.
+func (r *lkRoom) publish(pkt []byte, ts uint32) error {
+	return r.track.WriteSample(media.Sample{Data: pkt, Duration: 20 * time.Millisecond, PacketTimestamp: ts}, nil)
 }
 
 func (r *lkRoom) leave() { r.room.Disconnect() }

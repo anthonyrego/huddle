@@ -249,7 +249,7 @@ func TestVoiceOutResamplesAndPaces(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
 	defer cancel()
 	var frames int
-	v.run(ctx, func(p []byte, d time.Duration) error { frames++; return nil })
+	v.run(ctx, func(p []byte, ts uint32) error { frames++; return nil })
 	if frames != 5 || len(on) != 2 || !on[0] || on[1] {
 		t.Fatalf("frames %d, speaking edges %v", frames, on)
 	}
@@ -257,6 +257,35 @@ func TestVoiceOutResamplesAndPaces(t *testing.T) {
 	v.cut()
 	if len(v.buf) != 0 {
 		t.Fatal("cut kept audio")
+	}
+}
+
+// TestVoiceOutTimestampsFollowTheClock: within an answer the RTP timestamp
+// steps a frame at a time; across the quiet before the next answer it
+// steps by the time that went by, as a mic's does.
+func TestVoiceOutTimestampsFollowTheClock(t *testing.T) {
+	v := newVoiceOut(&countEnc{}, nil)
+	pcm := make([]byte, 24000*2/25) // 40 ms at 24 kHz: two frames
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	var ts []uint32
+	var mu sync.Mutex
+	go func() {
+		v.push(pcm, 24000)
+		time.Sleep(250 * time.Millisecond)
+		v.push(pcm, 24000)
+	}()
+	v.run(ctx, func(p []byte, at uint32) error { mu.Lock(); ts = append(ts, at); mu.Unlock(); return nil })
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ts) != 4 {
+		t.Fatalf("%d packets, want 4", len(ts))
+	}
+	if ts[1]-ts[0] != frameLen || ts[3]-ts[2] != frameLen {
+		t.Errorf("steps within an answer: %d and %d, want %d", ts[1]-ts[0], ts[3]-ts[2], frameLen)
+	}
+	if gap := ts[2] - ts[1]; gap < 8*frameLen || gap > 14*frameLen {
+		t.Errorf("step across ~210 ms of quiet: %d samples (%d frames)", gap, gap/frameLen)
 	}
 }
 

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/binary"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -109,11 +110,18 @@ func (v *voiceOut) speaking() bool {
 	return v.on
 }
 
-// run writes a frame every 20 ms while there is voice to send.
-func (v *voiceOut) run(ctx context.Context, write func(packet []byte, d time.Duration) error) {
+// run writes a frame every 20 ms while there is voice to send. Each
+// packet's RTP timestamp follows the clock, sent or not, as a person's mic
+// does: a receiver sees the quiet between answers as time going by, where a
+// timestamp that stood still would read as the network holding packets back
+// and push its jitter buffer to the most it waits.
+func (v *voiceOut) run(ctx context.Context, write func(packet []byte, ts uint32) error) {
 	t := time.NewTicker(20 * time.Millisecond)
 	defer t.Stop()
 	frame := make([]int16, frameLen)
+	start, ts0 := time.Now(), rand.Uint32()|1
+	var last uint32
+	var sent bool
 	for {
 		select {
 		case <-ctx.Done():
@@ -137,7 +145,14 @@ func (v *voiceOut) run(ctx context.Context, write func(packet []byte, d time.Dur
 			v.mu.Unlock()
 			if have {
 				if pkt, err := v.enc.Encode(frame); err == nil {
-					write(pkt, 20*time.Millisecond)
+					// The tick's frame number (the tick's own time, rounded),
+					// never the same as the last one sent.
+					n := uint32((now.Sub(start) + 10*time.Millisecond) / (20 * time.Millisecond))
+					if sent && n <= last {
+						n = last + 1
+					}
+					last, sent = n, true
+					write(pkt, ts0+n*frameLen)
 				}
 			}
 			if change != 0 && v.onSpeaking != nil {

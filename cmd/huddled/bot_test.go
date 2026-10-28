@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -312,3 +313,89 @@ func TestBotsOnBuiltin(t *testing.T) {
 type writerFunc func(frame []byte, ts uint32, level *uint8) error
 
 func (f writerFunc) WriteFrame(frame []byte, ts uint32, level *uint8) error { return f(frame, ts, level) }
+
+// TestEchoLive checks a running builtin server's echo bot (make bot
+// ARGS=echo) from outside: a person talks for 3 s, and a listener hears the
+// echo bot repeat it once, 1.5 s later. Against a running server only:
+//
+//	HUDDLE_ECHO_TEST=http://localhost:8080 HUDDLE_ECHO_ROOM=test go test ./cmd/huddled -run EchoLive -v
+func TestEchoLive(t *testing.T) {
+	server, room := os.Getenv("HUDDLE_ECHO_TEST"), os.Getenv("HUDDLE_ECHO_ROOM")
+	if server == "" || room == "" {
+		t.Skip("set HUDDLE_ECHO_TEST to a builtin server running an echo bot in HUDDLE_ECHO_ROOM")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	join := func(name string) wire.Joined {
+		j, err := devjoin.Join(ctx, server, wire.DevJoin{Room: room, Name: name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if j.Media != wire.MediaBuiltin {
+			t.Fatalf("the server's media is %q", j.Media)
+		}
+		return j
+	}
+	bea := &listen{voices: map[string]*got{}}
+	jb := join("Bea")
+	bs, err := sfuclient.Join(ctx, jb.MediaURL, jb.Token, sfuclient.Options{}, sfuclient.Events{
+		TrackAdded: func(rt *sfuclient.RemoteTrack) {
+			go bea.read(rt.SID, rt.Participant, rt.Name, func() ([]byte, error) {
+				p, _, err := rt.Track.ReadRTP()
+				if err != nil {
+					return nil, err
+				}
+				return p.Payload, nil
+			})
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bs.Close()
+	ja := join("Ann")
+	as, err := sfuclient.Join(ctx, ja.MediaURL, ja.Token, sfuclient.Options{SendOnly: true}, sfuclient.Events{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer as.Close()
+	annMic, _, err := as.PublishAudio(ctx, "microphone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var annTalk talk
+	annCtx, annStop := context.WithTimeout(ctx, 3*time.Second)
+	defer annStop()
+	annTalk.run(annCtx, annMic, 'a')
+	time.Sleep(2500 * time.Millisecond)
+
+	bea.mu.Lock()
+	defer bea.mu.Unlock()
+	var echoes []*got
+	for _, g := range bea.voices {
+		if g.tags['a'] > 0 && g.who != ja.Identity {
+			echoes = append(echoes, g)
+		}
+	}
+	if len(echoes) != 1 {
+		t.Fatalf("%d tracks carried Ann's voice besides hers, want the echo bot's alone", len(echoes))
+	}
+	e := echoes[0]
+	var delays []time.Duration
+	for i, n := range e.frames {
+		if at, ok := annTalk.when(n); ok {
+			delays = append(delays, e.at[i].Sub(at))
+		}
+	}
+	slices.Sort(delays)
+	if len(delays) < len(annTalk.at)*9/10 {
+		t.Fatalf("the echo carried %d of Ann's %d frames", len(delays), len(annTalk.at))
+	}
+	med := delays[len(delays)/2]
+	t.Logf("%s's %q: %d of Ann's %d frames, delay median %v (%v–%v); %d voices heard in all",
+		e.who, e.name, len(delays), len(annTalk.at), med.Round(time.Millisecond), delays[0].Round(time.Millisecond),
+		delays[len(delays)-1].Round(time.Millisecond), len(bea.voices))
+	if !strings.HasSuffix(e.who, wire.BotSuffix) || med < 1450*time.Millisecond || med > 1600*time.Millisecond {
+		t.Errorf("the echo came from %s %v after Ann, want a bot about 1.5 s after", e.who, med)
+	}
+}

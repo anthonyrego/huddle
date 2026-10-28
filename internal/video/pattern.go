@@ -151,10 +151,19 @@ func cellSizes(w int) []float64 {
 	return out
 }
 
+// clear is how far from the middle grey a cell's mean must be to read: a
+// read at the wrong cell size straddles neighbouring cells and lands in
+// between (and a 4-bit check alone passes one wrong read in sixteen).
+const clear = 50
+
 func readCode(f Frame, c float64) (uint32, bool) {
 	var b [cells]bool
 	for i := range b {
-		b[i] = meanF(f, float64(2+i)*c, c, c, c) > (black+white)/2
+		m := meanF(f, float64(2+i)*c, c, c, c)
+		if m > (black+white)/2-clear && m < (black+white)/2+clear {
+			return 0, false
+		}
+		b[i] = m > (black+white)/2
 	}
 	if !b[0] || b[1] || !b[2] || b[3] {
 		return 0, false

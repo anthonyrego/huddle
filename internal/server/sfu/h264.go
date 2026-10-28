@@ -1,0 +1,38 @@
+package sfu
+
+// H.264 NAL unit types the forwarder looks for in RTP payloads (RFC 6184).
+const (
+	nalSPS   = 7
+	nalSTAPA = 24
+	nalFUA   = 28
+)
+
+// keyframeStart says whether an H.264 RTP payload is the first packet of a
+// keyframe: it carries the SPS, which our encoder puts first in every
+// keyframe (macvideo.Encoder: SPS and PPS ahead of each IDR). The payload
+// is a single NAL unit, a STAP-A (pion's payloader puts the SPS and PPS in
+// one), or the first fragment of an FU-A.
+func keyframeStart(payload []byte) bool {
+	if len(payload) < 1 {
+		return false
+	}
+	switch t := payload[0] & 0x1f; {
+	case t == nalSTAPA:
+		for i := 1; i+2 < len(payload); {
+			n := int(payload[i])<<8 | int(payload[i+1])
+			i += 2
+			if n == 0 || i+n > len(payload) {
+				return false
+			}
+			if payload[i]&0x1f == nalSPS {
+				return true
+			}
+			i += n
+		}
+		return false
+	case t == nalFUA:
+		return len(payload) > 1 && payload[1]&0x80 != 0 && payload[1]&0x1f == nalSPS
+	default:
+		return t == nalSPS
+	}
+}

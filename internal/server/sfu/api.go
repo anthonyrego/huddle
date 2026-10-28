@@ -45,19 +45,24 @@ const (
 // 1080p screen.
 const nackKept = 512
 
-// newAPI makes the pion API for one role. Up: pion's NACK generator (the
-// publisher resends what didn't arrive), receiver reports, and TWCC
-// feedback for the publisher's congestion control. Down: pion's NACK
-// responder (a viewer's NACK is answered from what the down track sent) and
-// transport-wide sequence numbers. Down tracks write their own sender
-// reports, translated from the publisher's, so not pion's (it would map RTP
-// time to when the SFU forwarded each packet).
-func newAPI(n *network, r role) (*webrtc.API, error) {
+// newAPI makes the pion API for one role, with extra interceptors nearest
+// the network (congestion control; a narrow link in tests). Up: pion's NACK
+// generator (the publisher resends what didn't arrive), receiver reports,
+// and TWCC feedback for the publisher's congestion control. Down:
+// transport-wide sequence numbers, then pion's NACK responder (a viewer's
+// NACK is answered from what the down track sent) outside them, so a
+// resend gets a number of its own as congestion control needs. Down tracks
+// write their own sender reports, translated from the publisher's, so not
+// pion's (it would map RTP time to when the SFU forwarded each packet).
+func newAPI(n *network, r role, extra ...interceptor.Factory) (*webrtc.API, error) {
 	m := &webrtc.MediaEngine{}
 	if err := codecs.Register(m); err != nil {
 		return nil, err
 	}
 	ir := &interceptor.Registry{}
+	for _, f := range extra {
+		ir.Add(f)
+	}
 	switch r {
 	case up:
 		gen, err := nack.NewGeneratorInterceptor(nack.GeneratorInterval(nackEvery), nack.GeneratorMaxNacksPerPacket(nackTimes))
@@ -76,16 +81,16 @@ func newAPI(n *network, r role) (*webrtc.API, error) {
 		ir.Add(rr)
 		ir.Add(fb)
 	case down:
-		resp, err := nack.NewResponderInterceptor(nack.ResponderSize(nackKept))
-		if err != nil {
-			return nil, err
-		}
 		seq, err := twcc.NewHeaderExtensionInterceptor()
 		if err != nil {
 			return nil, err
 		}
-		ir.Add(resp)
+		resp, err := nack.NewResponderInterceptor(nack.ResponderSize(nackKept))
+		if err != nil {
+			return nil, err
+		}
 		ir.Add(seq)
+		ir.Add(resp)
 	}
 	s, err := n.settings()
 	if err != nil {

@@ -139,10 +139,20 @@ replaces lksdk behind `rtc.Connector`. LiveKit stays beside it
     a keyframe asked for at once on a new subscription.
   - The whiteboard joins in-process: the voices come to it as RTP from the
     SFU, its voice goes straight in.
-- **Step 0:** LiveKit's server source for reference; baselines through
-  LiveKit (voice-check, the `huddle video` set, agent-check, an app run with
-  bot cams); spikes as tests in CI: pion simulcast pion to pion, the
-  forwarder's splice on encoded layers, pion's GCC on the server's side.
+- **Step 0 (done 2026-10-28):**
+  - LiveKit's server source for reference, and baselines through LiveKit:
+    voice-check, the `huddle video` set, agent-check, and an app run with
+    bot cams.
+  - Spikes as tests in CI: pion simulcast pion to pion, the forwarder's
+    splice on synthetic and encoded layers, pion's GCC on the server's side.
+  - **Found:**
+    - A switch waits for the old layer to finish its frame. A keyframe
+      older than what was sent is used anyway, the client showing only
+      newer frames: waiting for a newer one never ends if the new layer
+      lags.
+    - pion's GCC on the sending side holds a narrow link when what's
+      sent follows it, and climbs while less is sent, so the allocation
+      caps it.
 - **Step 1, the seams (parallel):**
   - lkrtc becomes `internal/rtc/room` over a transport interface.
   - The signalling types, tokens, the dev join's `Media`, bots on the dev

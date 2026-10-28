@@ -44,9 +44,9 @@ func testPC(t *testing.T, api *webrtc.API) *webrtc.PeerConnection {
 	return pc
 }
 
-func sfuAPI(t *testing.T, n *network, r role) *webrtc.API {
+func sfuAPI(t *testing.T, n *network, r role, extra ...interceptor.Factory) *webrtc.API {
 	t.Helper()
-	api, err := newAPI(n, r)
+	api, err := newAPI(n, r, extra...)
 	if err != nil {
 		t.Fatal(err)
 	}

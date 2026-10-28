@@ -254,8 +254,8 @@ func (r *room) unsubscribed(sid string) {
 	if t == nil {
 		return
 	}
+	r.logTrack(t) // while the mix still has its numbers
 	r.mix.Remove(t.sid)
-	r.logTrack(t)
 	t.buf.Close()
 }
 

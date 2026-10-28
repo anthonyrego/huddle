@@ -83,9 +83,11 @@ dev-down:
 livekit:
 	livekit-server --dev --bind 0.0.0.0 --node-ip "$(LAN_IP)"
 
-# The server on this Mac, reachable from the LAN, in dev mode.
+# The server on this Mac, reachable from the LAN, in dev mode. Its media
+# goes through LiveKit (make livekit), or HUDDLE_MEDIA=builtin make server
+# for its own SFU, which offers LAN_IP.
 server: build
-	@HUDDLE_DEV=1 DATABASE_URL="$(DATABASE_URL)" LIVEKIT_URL="$(LIVEKIT_URL)" \
+	@HUDDLE_DEV=1 DATABASE_URL="$(DATABASE_URL)" HUDDLE_NODE_IP="$(LAN_IP)" LIVEKIT_URL="$(LIVEKIT_URL)" \
 		LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret $(KEY) ./build/huddled serve $(ARGS)
 
 # Notarizes build/Huddle.app (signed with a Developer ID certificate) and
@@ -130,7 +132,7 @@ fixtures: build
 # make agent-check MEETING=review [ARGS="-voice answers"]
 MEETING ?= review
 agent-check: build
-	@DATABASE_URL="$(DATABASE_URL)" LIVEKIT_URL="$(LIVEKIT_URL)" LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret \
+	@DATABASE_URL="$(DATABASE_URL)" HUDDLE_NODE_IP="$(LAN_IP)" LIVEKIT_URL="$(LIVEKIT_URL)" LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret \
 		$(KEY) ./build/huddled agent-check -meeting testdata/meetings/$(MEETING).txt $(ARGS)
 
 # Dev: fixture bots join ROOM on SERVER and play MEETING (make fixtures

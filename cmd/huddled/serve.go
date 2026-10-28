@@ -1,7 +1,9 @@
 package main
 
-// serve: the HTTP API and the meeting WebSocket over Postgres. Stage 1 has
-// no signing in, so it only runs in dev mode (HUDDLE_DEV=1).
+// serve: the HTTP API and the meeting WebSocket over Postgres, and the
+// media server's part (media.go: HUDDLE_MEDIA, HUDDLE_NODE_IP,
+// HUDDLE_RTC_SECRET). Stage 1 has no signing in, so it only runs in dev
+// mode (HUDDLE_DEV=1).
 
 import (
 	"context"
@@ -19,7 +21,6 @@ import (
 	"github.com/anthonyrego/huddle/internal/logx"
 	"github.com/anthonyrego/huddle/internal/server/agent"
 	"github.com/anthonyrego/huddle/internal/server/httpapi"
-	"github.com/anthonyrego/huddle/internal/server/lktoken"
 	"github.com/anthonyrego/huddle/internal/server/store"
 	"github.com/anthonyrego/huddle/internal/server/wshub"
 	"github.com/anthonyrego/huddle/internal/wire"
@@ -47,10 +48,8 @@ func runServe(args []string) error {
 		return errors.New("there's no signing in yet (stage 3), so the server only runs with HUDDLE_DEV=1, on a private network")
 	}
 	dbURL := os.Getenv("DATABASE_URL")
-	lkURL := os.Getenv("LIVEKIT_URL")
-	minter := lktoken.Minter{Key: os.Getenv("LIVEKIT_API_KEY"), Secret: os.Getenv("LIVEKIT_API_SECRET"), TTL: 10 * time.Minute}
-	if dbURL == "" || lkURL == "" || minter.Key == "" || minter.Secret == "" {
-		return errors.New("set DATABASE_URL, LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET (make server does)")
+	if dbURL == "" {
+		return errors.New("set DATABASE_URL (make server does)")
 	}
 	// Logs go to stderr; a dev server (HUDDLE_DATA_DIR set, as make server
 	// does) also keeps them in <data>/logs/serve.log, where agents read them.
@@ -62,6 +61,11 @@ func runServe(args []string) error {
 			}
 		}
 	}
+	md, err := newMedia(*addr)
+	if err != nil {
+		return err
+	}
+	defer md.close()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -83,7 +87,7 @@ func runServe(args []string) error {
 	var agents *agent.Manager
 	if key := os.Getenv("GEMINI_API_KEY"); key != "" && os.Getenv("HUDDLE_WHITEBOARD") != "0" {
 		agents = agent.NewManager(ctx, agent.Config{
-			Store: st, Hub: hub, APIKey: key, Media: agent.LiveKit{Minter: minter, URL: lkURL},
+			Store: st, Hub: hub, APIKey: key, Media: md.agent,
 			Voice: os.Getenv("HUDDLE_VOICE"),
 		})
 		defer func() { stop(); agents.Wait() }()
@@ -103,11 +107,12 @@ func runServe(args []string) error {
 			agents.Deliver(room, identity, e)
 		}
 	}
-	api := &httpapi.Server{Rooms: storeRooms{st, agents}, Minter: minter, LiveKitURL: lkURL, WS: hub, Dev: true}
+	api := &httpapi.Server{Rooms: storeRooms{st, agents}, WS: hub, Dev: true}
+	md.api(api)
 	srv := &http.Server{Addr: *addr, Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
-	slog.Info("serve: listening", "addr", *addr, "livekit", lkURL, "dev", true)
+	slog.Info("serve: listening", append([]any{"addr", *addr, "dev", true}, md.attrs()...)...)
 	select {
 	case err := <-errc:
 		return err

@@ -35,6 +35,7 @@ var pure = []string{
 	"internal/text",
 	"internal/theme",
 	"internal/ui",
+	"internal/video",
 	"internal/wire",
 }
 

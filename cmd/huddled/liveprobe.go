@@ -50,6 +50,9 @@ func runLiveProbe(args []string) error {
 			return fmt.Errorf("brain: %w", err)
 		}
 	}
+	if *only == "resume" {
+		return probeResume(ctx, key, *model)
+	}
 	if *only == "" || *only == "transcribe" {
 		if err := probeTranscribe(ctx, key, *tmodel); err != nil {
 			return fmt.Errorf("transcribe: %w", err)
@@ -329,5 +332,97 @@ func probeTranscribe(ctx context.Context, key, model string) error {
 		ended = time.Time{}
 	}
 	pump(2 * time.Second)
+	return nil
+}
+
+// probeResume asks for session resumption, records the updates the
+// server sends, then reconnects with the newest handle and asks about the
+// first connection.
+func probeResume(ctx context.Context, key, model string) error {
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: key, Backend: genai.BackendGeminiAPI, HTTPOptions: genai.HTTPOptions{APIVersion: "v1beta"}})
+	if err != nil {
+		return err
+	}
+	type session struct {
+		s    *genai.Session
+		msgs chan *genai.LiveServerMessage
+	}
+	connect := func(handle string) (*session, error) {
+		s, err := client.Live.Connect(ctx, model, &genai.LiveConnectConfig{
+			ResponseModalities:       []genai.Modality{genai.ModalityAudio},
+			OutputAudioTranscription: &genai.AudioTranscriptionConfig{},
+			SessionResumption:        &genai.SessionResumptionConfig{Handle: handle},
+			ContextWindowCompression: &genai.ContextWindowCompressionConfig{
+				TriggerTokens: genai.Ptr(int64(32000)), SlidingWindow: &genai.SlidingWindow{TargetTokens: genai.Ptr(int64(16000))},
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		ss := &session{s: s, msgs: make(chan *genai.LiveServerMessage, 256)}
+		go func() {
+			defer close(ss.msgs)
+			for {
+				m, err := s.Receive()
+				if err != nil {
+					fmt.Printf("  receive: %v\n", err)
+					return
+				}
+				ss.msgs <- m
+			}
+		}()
+		return ss, nil
+	}
+	// turn sends text and listens for 12 s, reporting resumption updates.
+	turn := func(s *session, text string) (handle, said string) {
+		s.s.SendClientContent(genai.LiveClientContentInput{Turns: []*genai.Content{genai.NewContentFromText(text, genai.RoleUser)}})
+		start := time.Now()
+		deadline := time.After(12 * time.Second)
+		for {
+			select {
+			case <-deadline:
+				return handle, said
+			case m, ok := <-s.msgs:
+				if !ok {
+					return handle, said
+				}
+				at := time.Since(start).Round(time.Millisecond)
+				if u := m.SessionResumptionUpdate; u != nil {
+					fmt.Printf("  %v resumption update: resumable=%v handle=%d chars\n", at, u.Resumable, len(u.NewHandle))
+					if u.Resumable && u.NewHandle != "" {
+						handle = u.NewHandle
+					}
+				}
+				if c := m.ServerContent; c != nil {
+					if t := c.OutputTranscription; t != nil {
+						said += t.Text
+					}
+					if c.TurnComplete {
+						fmt.Printf("  %v turn-complete\n", at)
+					}
+				}
+				if m.GoAway != nil {
+					fmt.Printf("  %v go-away: %v left\n", at, m.GoAway.TimeLeft)
+				}
+			}
+		}
+	}
+	s, err := connect("")
+	if err != nil {
+		return err
+	}
+	h, said := turn(s, "Remember the code word: marmalade. Say only: noted.")
+	s.s.Close()
+	fmt.Printf("first connection said %q; got a handle: %v\n", strings.TrimSpace(said), h != "")
+	if h == "" {
+		return errors.New("no resumption handle came")
+	}
+	s, err = connect(h)
+	if err != nil {
+		return fmt.Errorf("resume: %w", err)
+	}
+	defer s.s.Close()
+	_, said = turn(s, "What was the code word? Say only the word.")
+	fmt.Printf("resumed connection said %q\n", strings.TrimSpace(said))
 	return nil
 }

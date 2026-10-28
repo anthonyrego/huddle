@@ -34,6 +34,7 @@ type brain struct {
 	connecting bool
 	goAway     bool
 	ever       bool // connected at least once
+	since      time.Time
 	failures   int
 	retryAt    time.Time
 }
@@ -64,6 +65,13 @@ func (b *brain) connect(ctx context.Context, a *Agent) {
 	}
 	b.connecting = true
 	handle := b.handle
+	if b.sess != nil {
+		// A session can't be resumed while its old connection is open:
+		// close it first (this only happens between turns).
+		b.sess.Close()
+		b.sess = nil
+	}
+	log := a.log
 	cfg := live.Config{
 		Model:      a.cfg.BrainModel,
 		System:     system(a.policy),
@@ -80,6 +88,7 @@ func (b *brain) connect(ctx context.Context, a *Agent) {
 		if err != nil && handle != "" {
 			// A handle that no longer works: start fresh (every turn
 			// carries the summary and the board).
+			log.Warn("agent: resuming the brain failed; starting fresh", "err", err)
 			cfg.Resume = ""
 			s, err = live.Connect(cctx, a.cfg.APIKey, cfg)
 			resumed = false
@@ -98,11 +107,7 @@ func (b *brain) connected(ctx context.Context, a *Agent, r connectResult) {
 		a.trace(Event{Kind: EvError, Detail: "brain connect: " + r.err.Error()})
 		return
 	}
-	old := b.sess
-	b.sess, b.goAway, b.failures, b.ever = r.sess, false, 0, true
-	if old != nil {
-		old.Close()
-	}
+	b.sess, b.goAway, b.failures, b.ever, b.since = r.sess, false, 0, true, time.Now()
 	how := "fresh"
 	if r.resumed {
 		how = "resumed"
@@ -119,6 +124,10 @@ func (b *brain) connected(ctx context.Context, a *Agent, r connectResult) {
 func (b *brain) maybeReconnect(ctx context.Context, a *Agent) {
 	if b.connecting || time.Now().Before(b.retryAt) {
 		return
+	}
+	if e := a.cfg.ReconnectEvery; e > 0 && b.sess != nil && !b.goAway && time.Since(b.since) > e {
+		a.log.Info("agent: reconnecting the brain on schedule", "every", e)
+		b.goAway = true
 	}
 	if b.sess == nil || b.goAway {
 		b.connect(ctx, a)

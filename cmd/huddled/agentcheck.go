@@ -114,6 +114,7 @@ func runAgentCheck(args []string) error {
 	outDir := fs.String("out", "", "where the report goes (default .dev/check/<meeting>-<time>)")
 	huddle := fs.String("huddle", "build/huddle", "the app binary, to render the final board twice")
 	settle := fs.Duration("settle", 30*time.Second, "after the meeting, how long to wait for the whiteboard to finish")
+	reconnect := fs.Duration("reconnect-every", 0, "replace the brain's connection this often, as on GoAway (0: only when the server says)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -173,7 +174,7 @@ func runAgentCheck(args []string) error {
 	hub := &wshub.Hub{}
 	agents := agent.NewManager(ctx, agent.Config{
 		Store: st, Hub: recHub{hub, rec}, APIKey: key, Minter: minter, LiveKitURL: lkURL,
-		AutoEvery: *autoEvery, Trace: rec.trace, Idle: 10 * time.Minute,
+		AutoEvery: *autoEvery, Trace: rec.trace, Idle: 10 * time.Minute, ReconnectEvery: *reconnect,
 	})
 	hub.OnMessage = func(room, identity string, e wire.Envelope) { agents.Deliver(room, identity, e) }
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -261,7 +262,7 @@ func runAgentCheck(args []string) error {
 			rep.renders(*huddle, p, *outDir)
 		}
 	}
-	if script.Name == "soak" {
+	if script.Name == "soak" || *reconnect > 0 {
 		rep.continuity(evs)
 	}
 	rep.spend(evs, *voice)

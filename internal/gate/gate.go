@@ -531,7 +531,11 @@ func Wake(text string, names []string) (rest string, ok bool) {
 			continue // "whiteboard markers are out"
 		case atStart:
 			return strings.TrimSpace(trimLead(text[last.end:])), true
-		case ws[i].stopBefore && (last.commaAfter || i+n == len(ws)):
+		case ws[i].stopBefore && (last.commaAfter || i+n == len(ws)),
+			// A question ending in the name with no comma before it ("how
+			// many are there now whiteboard?"), unless a word just before it
+			// makes it a thing ("do we have a new whiteboard?").
+			i+n == len(ws) && strings.HasSuffix(strings.TrimSpace(text), "?") && !referential[prev] && (i < 2 || !referential[ws[i-2].w]):
 			// A vocative: ", whiteboard," or ", whiteboard?" at the end.
 			before := strings.TrimRight(strings.TrimSpace(text[:ws[i].start]), ",;:—– ")
 			after := strings.TrimSpace(text[last.end:])

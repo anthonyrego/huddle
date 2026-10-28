@@ -255,3 +255,21 @@ func TestInterimNameCountsAsOpen(t *testing.T) {
 		t.Fatal("a lost interim stays open")
 	}
 }
+
+func TestWakeAtTheEndOfAQuestion(t *testing.T) {
+	for _, c := range []struct {
+		text, rest string
+		ok         bool
+	}{
+		{"How many steps are on the board now whiteboard?", "How many steps are on the board now?", true},
+		{"What comes after review, whiteboard?", "What comes after review?", true},
+		{"Do we have a new whiteboard?", "", false},
+		{"Is that the whiteboard?", "", false},
+		{"We need a bigger whiteboard.", "", false},
+	} {
+		rest, ok := Wake(c.text, names)
+		if ok != c.ok || rest != c.rest {
+			t.Errorf("Wake(%q) = %q, %v; want %q, %v", c.text, rest, ok, c.rest, c.ok)
+		}
+	}
+}

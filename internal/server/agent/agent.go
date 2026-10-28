@@ -56,6 +56,9 @@ type Config struct {
 	AutoEvery time.Duration
 	// Idle is how long the agent stays in a room nobody is in.
 	Idle time.Duration
+	// ReconnectEvery, when set, replaces the brain's connection this
+	// often as if the server had said GoAway (to exercise resumption).
+	ReconnectEvery time.Duration
 	// NewEncoder makes the Opus encoder for the voice (NewEncoder when nil).
 	NewEncoder func() (Encoder, error)
 	// Trace, when set, hears everything the agent does (agent-check).

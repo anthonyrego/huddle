@@ -466,9 +466,17 @@ func score(s *fixturemeet.Script, t *fixturemeet.Timing, evs []agent.Event, t0 i
 		r.add("  %s", s)
 	}
 
-	// The voice policy: answers stays silent on drawing, speaks on questions.
+	// The voice policy: answers stays silent on drawing and speaks on
+	// questions; muted never speaks; narrate speaks on both.
 	var silentOK, silentN, speakOK, speakN int
 	var voiceBad []string
+	wantDraw, wantQuestion := false, true
+	switch voice {
+	case agent.VoiceMuted:
+		wantQuestion = false
+	case agent.VoiceNarrate:
+		wantDraw = true
+	}
 	for i, l := range t.Lines {
 		c := lineOf[i]
 		if c == nil {
@@ -480,19 +488,21 @@ func score(s *fixturemeet.Script, t *fixturemeet.Timing, evs []agent.Event, t0 i
 			silentN++
 			if frames == 0 {
 				silentOK++
-			} else {
-				voiceBad = append(voiceBad, fmt.Sprintf("spoke %.1fs on %q", float64(frames)/50, l.Text))
+			}
+			if (frames > 0) != wantDraw {
+				voiceBad = append(voiceBad, fmt.Sprintf("against the policy: %.1fs of voice on %q", float64(frames)/50, l.Text))
 			}
 		case fixturemeet.Question:
 			speakN++
 			if frames > 0 {
 				speakOK++
-			} else {
-				voiceBad = append(voiceBad, fmt.Sprintf("silent on %q (speak called: %v)", l.Text, spoke[c.Command]))
+			}
+			if (frames > 0) != wantQuestion {
+				voiceBad = append(voiceBad, fmt.Sprintf("against the policy: %.1fs of voice on %q (speak called: %v)", float64(frames)/50, l.Text, spoke[c.Command]))
 			}
 		}
 	}
-	r.add("voice (%s): silent on %d of %d drawing commands, spoke on %d of %d questions", voice, silentOK, silentN, speakOK, speakN)
+	r.add("voice (%s): silent on %d of %d drawing commands, spoke on %d of %d questions; %d against the policy", voice, silentOK, silentN, speakOK, speakN, len(voiceBad))
 	for _, v := range voiceBad {
 		r.add("  %s", v)
 	}

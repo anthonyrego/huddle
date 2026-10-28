@@ -19,7 +19,9 @@ import (
 // each utterance the session is told the audio stream ended, so the final
 // transcript comes about half a second later instead of waiting on the
 // server's silence detection (AGENTS.md). Sessions last ten minutes, so a
-// session older than rotateAfter is replaced at the next utterance.
+// session older than rotateAfter is replaced at the next utterance; the
+// service also aborts one after about a minute without audio, so a quiet
+// person's session is closed first and opened again when they speak.
 
 const (
 	earRate     = 16000
@@ -29,7 +31,7 @@ const (
 	vadHangover = 450 * time.Millisecond
 	rotateAfter = 8 * time.Minute
 	hardRotate  = 9*time.Minute + 30*time.Second
-	idleClose   = 3 * time.Minute
+	idleClose   = 40 * time.Second // the service aborts a session after about a minute without audio
 	finalWait   = 2500 * time.Millisecond
 )
 

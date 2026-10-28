@@ -297,6 +297,58 @@ func TestJitterRaisesThenLowersTarget(t *testing.T) {
 	}
 }
 
+// TestPaddingThenSpeech is the whiteboard's track as a new subscriber gets
+// it: LiveKit's 5 s of padding, whose timestamps step 961 every ~21.8 ms
+// (slower than they arrive), then quiet, then an answer at 20 ms a frame.
+// The answer is measured on its own, at the floor, not at the most the
+// padding's drift left in the window. A mic's DTX frame every 400 ms keeps
+// the window, so its jitter carries across a pause.
+func TestPaddingThenSpeech(t *testing.T) {
+	var s []sent
+	ts := uint32(0)
+	for k := range 251 {
+		at := t0.Add(time.Duration(k) * 21800 * time.Microsecond)
+		s = append(s, sent{pkt: Packet{Seq: uint16(k), TS: ts, Payload: payload(k)}, sentAt: at, at: at})
+		ts += 961
+	}
+	answer := stream(120, 251, ts+407438)
+	for i := range answer {
+		answer[i].pkt.Payload = payload(251 + i)
+		answer[i].sentAt = answer[i].sentAt.Add(13 * time.Second)
+		answer[i].at = answer[i].at.Add(13 * time.Second)
+	}
+	pad := New(fakeDec{}, Config{})
+	run(pad, s, 6*time.Second)
+	t.Logf("after the padding alone: target %v", pad.Stats().Target)
+	b := New(fakeDec{}, Config{})
+	run(b, append(s, answer...), 16*time.Second)
+	if st := b.Stats(); st.Target != 40*time.Millisecond {
+		t.Fatalf("target %v during the answer, want 40 ms", st.Target)
+	}
+
+	// 40 ms of jitter, a 3 s pause holding a DTX frame every 400 ms, then
+	// calm speech: the pause doesn't wipe what the jitter taught.
+	jittery := through(stream(200, 0, 0), netsim.New(0, 40*time.Millisecond, 0, 3))
+	var pause []sent
+	for k := range 150 {
+		if k%20 == 0 {
+			at := t0.Add(4*time.Second + time.Duration(k)*20*time.Millisecond)
+			pause = append(pause, sent{pkt: Packet{Seq: uint16(200 + k/20), TS: uint32((200 + k) * opus.FrameSamples), Payload: dtxPayload()}, sentAt: at, at: at.Add(5 * time.Millisecond)})
+		}
+	}
+	calm := stream(20, uint16(200+len(pause)), 350*opus.FrameSamples)
+	for i := range calm {
+		calm[i].pkt.Payload = payload(400 + i)
+		calm[i].sentAt = calm[i].sentAt.Add(7 * time.Second)
+		calm[i].at = calm[i].at.Add(7 * time.Second)
+	}
+	b2 := New(fakeDec{}, Config{})
+	run(b2, append(append(jittery, pause...), calm...), 8*time.Second)
+	if st := b2.Stats(); st.Target <= 40*time.Millisecond {
+		t.Fatalf("target %v after a pause with DTX: the jitter was forgotten", st.Target)
+	}
+}
+
 // TestStallThenBurst: 600 ms with nothing, then it all arrives at once.
 // The buffer conceals through the stall, and trims the burst back.
 func TestStallThenBurst(t *testing.T) {

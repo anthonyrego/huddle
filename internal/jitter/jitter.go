@@ -99,8 +99,9 @@ type Buffer struct {
 	inDTX   bool      // the last packet played was DTX: the sender is quiet
 	plcRun  int       // samples concealed in a row during an underrun
 
-	baseAt      time.Time // arrival of the first packet, for transit times
+	baseAt      time.Time // arrival of the talk spurt's first packet, for transit times
 	baseTS      int64
+	lastAt      time.Time // arrival of the last packet
 	transits    []float64 // ring of recent relative transit times, seconds
 	ti          int
 	lastTransit float64
@@ -136,6 +137,10 @@ func (b *Buffer) Close() error {
 }
 
 const rate = opus.SampleRate
+
+// quietReset is how long without a packet starts the target's measurement
+// over (see observe).
+const quietReset = time.Second
 
 func samples(d time.Duration) int64 { return int64(d) * rate / int64(time.Second) }
 
@@ -185,9 +190,17 @@ func (b *Buffer) restart() {
 
 // observe updates the jitter estimate and the target with one arrival.
 func (b *Buffer) observe(ts int64, at time.Time) {
-	if b.baseAt.IsZero() {
+	// A quiet with no packets at all (a mic sends a DTX frame every 400 ms,
+	// so this is a muted mic, or the whiteboard between answers) ends what
+	// the window knows, and the next talk spurt is measured on its own. What
+	// came before can be stale: LiveKit pads a track nobody has sent on yet
+	// with 5 s of frames whose timestamps run slower than they arrive, which
+	// alone holds the target at its most for the next 250 packets.
+	if b.baseAt.IsZero() || at.Sub(b.lastAt) > quietReset {
 		b.baseAt, b.baseTS = at, ts
+		b.transits, b.ti = b.transits[:0], 0
 	}
+	b.lastAt = at
 	transit := at.Sub(b.baseAt).Seconds() - float64(ts-b.baseTS)/rate
 	if len(b.transits) > 0 {
 		b.jitter += (math.Abs(transit-b.lastTransit) - b.jitter) / 16

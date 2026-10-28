@@ -1,0 +1,8 @@
+huddle is under the MIT License (LICENSE), except files that begin with an
+Apache License 2.0 header: those are adapted from LiveKit's server and Go SDK
+and stay under the Apache License 2.0 (LICENSES/Apache-2.0.txt). Each says
+which file it comes from and what changed.
+
+LiveKit (github.com/livekit/livekit, github.com/livekit/server-sdk-go,
+github.com/livekit/mediatransportutil)
+Copyright 2023 LiveKit, Inc.

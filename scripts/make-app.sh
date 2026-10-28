@@ -31,6 +31,9 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
 cp "$bin" "$app/Contents/MacOS/huddle"
 
+# The licenses: the app carries code adapted from LiveKit's SDK (Apache 2.0).
+cp "$here/../LICENSE" "$here/../NOTICE" "$here/../LICENSES/Apache-2.0.txt" "$app/Contents/Resources/"
+
 # SDL from the go-sdl3 module the binary was built against.
 sdl_dir=$(go list -m -f '{{.Dir}}' github.com/Zyko0/go-sdl3)
 arch=$(go env GOARCH)

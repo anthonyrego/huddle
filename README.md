@@ -34,4 +34,6 @@ Signing settings go in `local.mk` (see `local.mk.example`).
 
 ## License
 
-MIT
+MIT, except files that begin with an Apache License 2.0 header: those are
+adapted from LiveKit's server and Go SDK and stay under that license (see
+`NOTICE` and `LICENSES/Apache-2.0.txt`).

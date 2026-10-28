@@ -61,6 +61,13 @@ type Config struct {
 	// heard talking: a frame sent before typed text, or just after they
 	// stop, is never seen.
 	Video bool
+
+	// Text asks for text replies instead of audio (the transcription
+	// model only answers in text): no voice and no output transcript.
+	Text bool
+	// Transcription configures the transcript of what is heard (language
+	// hints, vocabulary, mode); nil asks for the default.
+	Transcription *genai.AudioTranscriptionConfig
 }
 
 // Kind says what an Event carries.
@@ -81,9 +88,11 @@ const (
 	VoiceEnd                       // the server heard the user stop
 	Usage                          // Usage
 	Closed                         // Err: the session ended (nil after Close)
+	InterimText                    // Text: a provisional transcript of what is being said, replaced by the next
+	ModelText                      // Text: a text reply (Config.Text), thoughts excluded
 )
 
-var kindNames = [...]string{"audio", "input-text", "output-text", "interrupted", "generation-complete", "turn-complete", "tool-call", "tool-cancel", "go-away", "resumable", "voice-start", "voice-end", "usage", "closed"}
+var kindNames = [...]string{"audio", "input-text", "output-text", "interrupted", "generation-complete", "turn-complete", "tool-call", "tool-cancel", "go-away", "resumable", "voice-start", "voice-end", "usage", "closed", "interim-text", "model-text"}
 
 func (k Kind) String() string {
 	if int(k) < len(kindNames) {
@@ -105,6 +114,7 @@ type Event struct {
 	Handle   string
 	Usage    *genai.UsageMetadata
 	Err      error
+	Finished bool // InputText: the transcript of this stretch of speech is final
 }
 
 // Session is a connected Live session.
@@ -167,10 +177,17 @@ func connectConfig(cfg Config) *genai.LiveConnectConfig {
 		Tools:                    cfg.Tools,
 		SessionResumption:        &genai.SessionResumptionConfig{Handle: cfg.Resume},
 	}
+	if cfg.Text {
+		c.ResponseModalities = []genai.Modality{genai.ModalityText}
+		c.OutputAudioTranscription = nil
+	}
+	if cfg.Transcription != nil {
+		c.InputAudioTranscription = cfg.Transcription
+	}
 	if cfg.System != "" {
 		c.SystemInstruction = genai.NewContentFromText(cfg.System, genai.RoleUser)
 	}
-	if cfg.Voice != "" {
+	if cfg.Voice != "" && !cfg.Text {
 		c.SpeechConfig = &genai.SpeechConfig{VoiceConfig: &genai.VoiceConfig{
 			PrebuiltVoiceConfig: &genai.PrebuiltVoiceConfig{VoiceName: cfg.Voice},
 		}}
@@ -262,6 +279,26 @@ func (s *Session) SendText(text string) {
 	})
 }
 
+// SendAudioEnd says the audio stream has paused (the speaker stopped), so
+// the server finalizes what it heard without waiting for its own silence
+// detection. Sending audio again reopens the stream.
+func (s *Session) SendAudioEnd() {
+	s.enqueue(func(gs *genai.Session) error {
+		return gs.SendRealtimeInput(genai.LiveRealtimeInput{AudioStreamEnd: true})
+	})
+}
+
+// SendTurn sends text as a whole user turn (client content), which the
+// model answers when complete is true.
+func (s *Session) SendTurn(text string, complete bool) {
+	s.enqueue(func(gs *genai.Session) error {
+		return gs.SendClientContent(genai.LiveClientContentInput{
+			Turns:        []*genai.Content{genai.NewContentFromText(text, genai.RoleUser)},
+			TurnComplete: genai.Ptr(complete),
+		})
+	})
+}
+
 // SendToolResponse answers tool calls.
 func (s *Session) SendToolResponse(rs []*genai.FunctionResponse) {
 	s.enqueue(func(gs *genai.Session) error {
@@ -337,13 +374,18 @@ func translate(m *genai.LiveServerMessage, now time.Time) []Event {
 			for _, p := range c.ModelTurn.Parts {
 				if p.InlineData != nil && strings.HasPrefix(p.InlineData.MIMEType, "audio/") {
 					add(Event{Kind: Audio, Data: p.InlineData.Data, Rate: rateOf(p.InlineData.MIMEType)})
+				} else if p.Text != "" && !p.Thought {
+					add(Event{Kind: ModelText, Text: p.Text})
 				} else if p.Text != "" {
-					slog.Debug("live: model text", "thought", p.Thought, "text", p.Text)
+					slog.Debug("live: model thought", "text", p.Text)
 				}
 			}
 		}
-		if t := c.InputTranscription; t != nil && t.Text != "" {
-			add(Event{Kind: InputText, Text: t.Text})
+		if t := c.InterimInputTranscription; t != nil && t.Text != "" {
+			add(Event{Kind: InterimText, Text: t.Text})
+		}
+		if t := c.InputTranscription; t != nil && (t.Text != "" || t.Finished) {
+			add(Event{Kind: InputText, Text: t.Text, Finished: t.Finished})
 		}
 		if t := c.OutputTranscription; t != nil && t.Text != "" {
 			add(Event{Kind: OutputText, Text: t.Text})

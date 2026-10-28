@@ -65,5 +65,14 @@ DATABASE_URL=... ./build/huddled put-board -room test -fixture testdata/workflow
 ```
 Logs: `.dev/data/logs/<subcommand>.log` for the app (`conn: joined`, `conn: welcome`, `conn: version`, `conn: lost`); the server logs to stderr (`make server`): `api: dev join`, `ws: joined`, `ws: left`.
 
+## What the models do (live-probe, 2026-10-27)
+`make live-probe` (`huddled live-probe [-only brain|transcribe] [-auto-schedule]`) asks the real models; about $0.10 a run. Findings:
+- **`gemini-3.8-live` takes commands either way, mid-session.** Ten commands alternating client content (`Session.SendTurn`) and realtime text (`SendText`) in one session all drew: first tool call 0.35–1.0 s after the send. Neither path broke tool calls after the other was used.
+- **A whole turn's tool calls come first, in one message, then audio.** On a question the `speak` call arrives at 0.36–0.42 s and the first audio at 0.86–1.3 s, after `speak` is answered. So the agent knows a turn will be spoken before any audio arrives.
+- **Answer `speak` `WHEN_IDLE`, never `SILENT`.** A `SILENT` answer to `speak` left the question unanswered, and the model said that answer aloud during a later, unrelated command.
+- **Answer successful drawing calls `SILENT`.** Answered `WHEN_IDLE`, a drawing turn starts another generation per answer: one command repeated the same three `add_node` calls six times, and another spoke filler ("<no speech>{pause}"). Answered `SILENT`, every drawing command came as one batch with `turn-complete` at the same moment, and no audio. A rejected call, `get_board` and `speak` are answered `WHEN_IDLE`, so the model can fix the call, use the read or speak (a `get_board` then a `connect` came 0.37 s apart).
+- **A turn is over at a `turn-complete` with no `WHEN_IDLE` answer outstanding.**
+- **`gemini-3.5-transcribe-live` takes 16 kHz s16 PCM in 100 ms chunks and returns text** (setup: TEXT modality, input transcription on). Interim hypotheses (`interimInputTranscription`) come about every 0.5 s while someone talks; the final (`inputTranscription`, then `generation-complete`) comes 0.35–0.58 s after the speech ends when the client sends `audioStreamEnd` at its own VAD's end of speech, and 1.4 s after with the server's VAD alone. The final is punctuated ("Whiteboard, draw our release process: build, then test, then deploy."); "White board" came back as "Whiteboard".
+
 ## Conventions
 - **Commits:** conventional style (`feat(server): …`), one per logical step, authored as the repo's local git config says. Push only when the user says.

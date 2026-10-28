@@ -29,7 +29,7 @@ ROOM ?= test
 GO = CGO_ENABLED=0 go
 
 .PHONY: build app run render test test-db vet shaders shaders-check nocgo check \
-	dev-up dev-down livekit server notarize lan-ip
+	dev-up dev-down livekit server notarize lan-ip live-probe
 
 build:
 	$(GO) build -o build/huddle ./cmd/huddle
@@ -105,3 +105,8 @@ notarize: app
 
 lan-ip:
 	@echo $(LAN_IP)
+
+# Asks the realtime and transcription models what the whiteboard relies on
+# (a few cents). ARGS="-only brain" or "-only transcribe".
+live-probe: build
+	@$(KEY) ./build/huddled live-probe $(ARGS)

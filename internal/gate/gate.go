@@ -139,6 +139,9 @@ func (g *Gate) SetSpeaking(on bool) { g.speaking = on }
 // Speaking reports what SetSpeaking said.
 func (g *Gate) Speaking() bool { return g.speaking }
 
+// Open lists the identities addressing the whiteboard now, oldest first.
+func (g *Gate) Open() []string { return g.order() }
+
 // Addressing reports whether identity is addressing the whiteboard now.
 func (g *Gate) Addressing(identity string) bool { return g.open[identity] != nil }
 

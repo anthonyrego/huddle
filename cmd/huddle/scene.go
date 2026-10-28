@@ -1,9 +1,11 @@
 package main
 
-// The meeting window: the board stage filling it, a status pill at the top
-// left (the connection and the whiteboard), the command field at the
-// bottom of the stage, and the bar along the bottom (bar.go: the room, and
-// the voice session from Track V).
+// The meeting window: the stage (stage.go: the board, or a screen someone
+// shares), camera tiles beside it once anyone's camera is on (tiles.go), a
+// status pill at the stage's top left (the connection and the
+// whiteboard), the command field at the bottom of the stage, and the bar
+// along the bottom (bar.go: the room, the voice session, the camera and
+// the share).
 //
 // Talking to the whiteboard: say "whiteboard, …"; or type in the command
 // field (/ focuses it, Enter sends, Esc leaves it); or hold the right ⌥
@@ -62,10 +64,29 @@ type meetingScene struct {
 	// menu (devmenu.go).
 	devRect draw.Rect
 	menu    devMenu
+
+	// vid is the video on screen (tiles.go); its frames go to the GPU
+	// through vid.frames, which the window sets to its renderer.
+	vid sceneVideo
+	// onStage is whose screen is on the stage ("" the board); shares the
+	// screens shared last frame; boardSeen the board version last on
+	// stage (stage.go). tabHits are the tabs, for clicks.
+	onStage   string
+	shares    map[string]bool
+	boardSeen int64
+	tabHits   []tabHit
+	// camRect and shareRect are where the bar drew its Camera and Share
+	// buttons; asks is what they asked for (bar.go).
+	camRect, shareRect draw.Rect
+	asks               videoAsks
+	// mutedTiles marks people's tiles muted (render only: the room
+	// doesn't say who's muted yet).
+	mutedTiles map[string]bool
 }
 
 func newMeetingScene(shaper *text.Shaper, scale func() float32, mt *meeting) *meetingScene {
 	s := &meetingScene{shaper: shaper, scale: scale, mt: mt, view: boardview.New()}
+	s.vid.poll.wake = mt.wake
 	s.host.W = s.view
 	s.view.OnClick = func(id string) { slog.Info("board: clicked", "id", id) }
 	s.field = ui.NewTextField("Tell the whiteboard…   / to type · Enter sends · hold right ⌥ to talk to it", 1)
@@ -80,20 +101,46 @@ func (s *meetingScene) ctx(pal theme.Palette, now time.Time) *ui.Ctx {
 func (s *meetingScene) draw(l *draw.List, w, h float32, pal theme.Palette, now time.Time) {
 	s.more = false
 	c := s.ctx(pal, now)
-	stage := draw.Rect{W: w, H: h - barH}
-	s.host.Draw(c, l, stage)
-	s.drawStatus(c, l)
-	s.drawField(c, l, stage)
+	var st callState
+	var v videoState
+	if s.call != nil {
+		st, v = s.call.snapshot(), s.call.videoSnapshot()
+	}
+	s.vid.begin()
+	ps := tilePeople(st, v, s.mutedTiles)
+	sl := layoutStage(w, h-barH, len(ps), tilePrio(ps))
+	tabs := screenTabs(st, v)
+	s.followShares(tabs)
+	stage := sl.stage
+	share := s.onStageTab(tabs)
+	if share == nil {
+		s.host.Draw(c, l, stage)
+		s.boardSeen = s.st.seq
+	}
+	s.drawTiles(c, l, sl, ps)
+	pill := s.drawStatus(c, l, stage)
+	tabsRect := s.drawTabs(c, l, stage, pill, tabs)
+	s.layoutField(c, stage)
+	if share != nil {
+		top := max(pill.Bottom(), tabsRect.Bottom()) + 12
+		s.drawShare(c, l, draw.Rect{X: stage.X + 16, Y: top, W: stage.W - 32, H: s.fieldRect.Y - 12 - top}, *share)
+	}
+	s.drawField(c, l)
 	s.drawBar(c, l, draw.Rect{Y: h - barH, W: w, H: barH})
+	s.vid.end(v.tracks, v.camera)
 	s.drawMenu(c, l, w)
 }
 
-// drawField draws the command field along the bottom of the stage, and
-// a note over it while the push-to-address key is held.
-func (s *meetingScene) drawField(c *ui.Ctx, l *draw.List, stage draw.Rect) {
+// layoutField places the command field along the bottom of the stage.
+func (s *meetingScene) layoutField(c *ui.Ctx, stage draw.Rect) {
 	fw := min(fieldMaxW, stage.W-32)
 	fh := s.field.Measure(c, fw)
 	s.fieldRect = draw.Rect{X: stage.X + (stage.W-fw)/2, Y: stage.Bottom() - fh - fieldGap, W: fw, H: fh}
+}
+
+// drawField draws the command field where layoutField put it, and a note
+// over it while the push-to-address key is held.
+func (s *meetingScene) drawField(c *ui.Ctx, l *draw.List) {
 	l.Shadow(s.fieldRect, c.Pal.Shadow, draw.Uniform(6), 8)
 	s.field.Draw(c, l, s.fieldRect)
 	if s.addressing {
@@ -105,9 +152,10 @@ func (s *meetingScene) drawField(c *ui.Ctx, l *draw.List, stage draw.Rect) {
 	}
 }
 
-// drawStatus is the pill at the top left: the connection's state, and what
-// the whiteboard is doing once it's in the room.
-func (s *meetingScene) drawStatus(c *ui.Ctx, l *draw.List) {
+// drawStatus is the pill at the stage's top left: the connection's state,
+// and what the whiteboard is doing once it's in the room. It returns
+// where it drew it.
+func (s *meetingScene) drawStatus(c *ui.Ctx, l *draw.List, stage draw.Rect) draw.Rect {
 	status := s.st.conn
 	if status == "" {
 		status = connOffline
@@ -134,11 +182,12 @@ func (s *meetingScene) drawStatus(c *ui.Ctx, l *draw.List) {
 		}
 	}
 	lay := s.tc.lay(c, status, text.SansSemibold, 12.5)
-	r := draw.Rect{X: 16, Y: 14, W: lay.Width + 34, H: lay.Height + 14}
+	r := draw.Rect{X: stage.X + 16, Y: stage.Y + 14, W: lay.Width + 34, H: lay.Height + 14}
 	l.Shadow(r, c.Pal.Shadow, draw.Uniform(r.H/2), 8)
 	l.BorderedRect(r, c.Pal.Surface, c.Pal.Border, 1, draw.Uniform(r.H/2))
 	l.Rect(draw.Rect{X: r.X + 13, Y: r.Y + r.H/2 - 4, W: 8, H: 8}, dot, draw.Uniform(4))
 	drawAt(l, lay, r.X+27, r.Y+7, c.Pal.Text)
+	return r
 }
 
 // agentLine says what the whiteboard is doing, or "" before it has said.
@@ -213,6 +262,12 @@ func (s *meetingScene) event(ev *sdl.Event, pal theme.Palette) bool {
 		if s.field.Focused() {
 			s.focusField(false)
 		}
+		for _, t := range s.tabHits {
+			if uev.Button == 1 && t.r.Contains(uev.Pos) {
+				s.onStage = t.id
+				return true
+			}
+		}
 	case ui.KeyPress:
 		if s.field.Focused() {
 			switch {
@@ -250,6 +305,9 @@ func (s *meetingScene) event(ev *sdl.Event, pal theme.Palette) bool {
 	}
 	if s.barEvent(uev) {
 		return true
+	}
+	if s.onStage != "" {
+		return false // a share is on stage: the board isn't there to pan
 	}
 	return s.host.Event(c, uev).Redraw
 }
@@ -320,6 +378,7 @@ func (s *meetingScene) apply(st meetingState, now time.Time) {
 			s.view.Show(doc, st.place, nil, now)
 		} else {
 			s.view.ResetTo(doc, st.place, now)
+			s.boardSeen = st.seq // joining isn't news: no badge for it
 		}
 	}
 	if st.reveal != nil && st.revealSeq == st.seq {

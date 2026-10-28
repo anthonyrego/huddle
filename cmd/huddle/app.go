@@ -131,6 +131,7 @@ func runApp(args []string) error {
 	mt := &meeting{wake: func() { platform.Wake() }}
 	a.scene = newMeetingScene(a.shaper, func() float32 { return a.window.Scale() }, mt)
 	a.scene.translate = a.translate
+	a.scene.vid.frames = a.renderer // video frames go to the GPU in Prepare (tiles.go)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

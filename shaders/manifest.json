@@ -5,6 +5,22 @@
   },
   "shaders": [
     {
+      "source": "src/nv12.frag.hlsl",
+      "sha256": "7fa1533650ce3113b1d508a883f56c1ec2f161206f04ad91c0d2edae9ba817ae",
+      "outputs": {
+        "compiled/msl/nv12.frag.msl": "8423db8c2341b350a050647ed69bf0f4057d02e87112dddee87184e587560f6d",
+        "compiled/spirv/nv12.frag.spv": "02278e09958e5537330347332e7b85831e101f9935b61320c284f89ea457572f"
+      }
+    },
+    {
+      "source": "src/nv12.vert.hlsl",
+      "sha256": "67cf7d06e1c860e030f40c22d69229c2c709c47c2c8bd5bb156c5068865c1aa0",
+      "outputs": {
+        "compiled/msl/nv12.vert.msl": "71fe2ecd6756e4667d57bf61a01dab143ccfe04fc6ed0f98256b972485eb0430",
+        "compiled/spirv/nv12.vert.spv": "b4a337cffe867fd548f7d2a1d34ae7fe528b58dbe66f6ba9a6301d8701a6e588"
+      }
+    },
+    {
       "source": "src/quad.frag.hlsl",
       "sha256": "2a47bff1a3c6b32d2fdf897c12a84ae1a6c78e5a20d1cb8641bbef6b3e3097e1",
       "outputs": {

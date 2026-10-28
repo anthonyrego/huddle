@@ -55,6 +55,8 @@ type Renderer struct {
 
 	// UploadBytes is the atlas bytes uploaded by the last Prepare.
 	UploadBytes int
+
+	video videoPass // video frames as images (video.go)
 }
 
 // stagingBuffer is an upload transfer buffer that grows and is cycled on
@@ -232,6 +234,9 @@ func (r *Renderer) syncPages(a *text.Atlas, texs *[]*sdl.GPUTexture, size *int, 
 // it on the same command buffer. On error nothing is recorded and the dirty
 // regions stay dirty for the next frame.
 func (r *Renderer) Prepare(cmd *sdl.GPUCommandBuffer, b *Batch) error {
+	// Video frames first (their own passes): a failure there keeps the
+	// pictures the images had, and the rest of the frame goes on.
+	r.video.err = r.prepareVideo(cmd)
 	r.pending = r.pending[:0]
 	r.UploadBytes = 0
 	var total uint32
@@ -423,6 +428,7 @@ func (r *Renderer) Render(cmd *sdl.GPUCommandBuffer, target *sdl.GPUTexture, for
 // Destroy releases GPU resources owned by the renderer, including atlas
 // pages (not registered images).
 func (r *Renderer) Destroy() {
+	r.destroyVideo()
 	for _, p := range r.pipelines {
 		r.device.ReleaseGraphicsPipeline(p)
 	}

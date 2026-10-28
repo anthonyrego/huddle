@@ -1,0 +1,32 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct Crop
+{
+    float4 Src;
+};
+
+struct main0_out
+{
+    float4 _entryPointOutput [[color(0)]];
+};
+
+struct main0_in
+{
+    float2 input_UV [[user(locn0)]];
+};
+
+fragment main0_out main0(main0_in in [[stage_in]], constant Crop& _19 [[buffer(0)]], texture2d<float> Luma [[texture(0)]], texture2d<float> Chroma [[texture(1)]], sampler LumaSampler [[sampler(0)]], sampler ChromaSampler [[sampler(1)]])
+{
+    main0_out out = {};
+    float2 _139 = _19.Src.xy + (in.input_UV * _19.Src.zw);
+    float2 _122 = Chroma.sample(ChromaSampler, _139).xy;
+    float _154 = 1.16438305377960205078125 * (Luma.sample(LumaSampler, _139).x - 0.062745101749897003173828125);
+    float _157 = _122.x - 0.501960813999176025390625;
+    float _160 = _122.y - 0.501960813999176025390625;
+    out._entryPointOutput = float4(fast::clamp(float3(_154 + (1.79274094104766845703125 * _160), (_154 - (0.2132489979267120361328125 * _157)) - (0.532908976078033447265625 * _160), _154 + (2.1124019622802734375 * _157)), float3(0.0), float3(1.0)), 1.0);
+    return out;
+}
+

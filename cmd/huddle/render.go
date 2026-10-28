@@ -14,6 +14,7 @@ import (
 	"image"
 	"image/png"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Zyko0/go-sdl3/sdl"
@@ -23,8 +24,10 @@ import (
 	"github.com/anthonyrego/huddle/internal/draw"
 	"github.com/anthonyrego/huddle/internal/gfx"
 	"github.com/anthonyrego/huddle/internal/platform"
+	"github.com/anthonyrego/huddle/internal/rtc"
 	"github.com/anthonyrego/huddle/internal/text"
 	"github.com/anthonyrego/huddle/internal/theme"
+	"github.com/anthonyrego/huddle/internal/video"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
 
@@ -109,9 +112,12 @@ func runRender(args []string) error {
 	mic := fs.String("mic", "", "with -people: the mic, on|muted|listening|lost|noecho (on without echo cancelling: it would not start)|waiting|retry|reconnecting")
 	menu := fs.Bool("devices", false, "with -people: the device menu open, on made-up devices")
 	echoOff := fs.Bool("echo-off", false, "with -devices: echo cancelling turned off in the menu")
+	var vf videoFlags
+	vf.register(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	*people = vf.people(*people)
 	if *out == "" {
 		return errors.New("-out is required")
 	}
@@ -156,6 +162,7 @@ func runRender(args []string) error {
 	now := time.Now()
 	sc := float32(*scale)
 	s := newMeetingScene(o.shaper, func() float32 { return sc }, &meeting{})
+	s.vid.frames = o.renderer
 	switch *conn {
 	case "unreachable":
 		*conn = connUnreachable
@@ -174,11 +181,19 @@ func runRender(args []string) error {
 		st.agent = wire.AgentStatus{State: wire.AgentState(*agent), Detail: *detail, Queued: *queued}
 	}
 	s.apply(st, now)
+	var fakes []*fakeTrack
 	if *people != "" {
 		s.call = renderCall(*people, *mic)
+		if fakes, err = vf.apply(s); err != nil {
+			return err
+		}
 		if *menu {
-			s.call.prefs = devicePrefs{Speakers: "monitor", EchoOff: *echoOff}
-			s.openMenu(renderDevices, nil)
+			s.call.prefs = devicePrefs{Speakers: "monitor", EchoOff: *echoOff, Camera: vf.pickCam}
+			var camErr error
+			if vf.noCams {
+				camErr = errVideoNotYet
+			}
+			s.openMenu(renderDevices, nil, renderCameras, camErr)
 			s.menu.hover = 3
 		}
 	}
@@ -201,7 +216,210 @@ func runRender(args []string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "wrote %s (%d ops, %d draw ops)\n", *out, len(ops), len(l.Ops()))
+	for _, t := range fakes {
+		fmt.Fprintf(os.Stderr, "  %s %s: SetSize %dx%d\n", t.id, t.kind, t.w, t.h)
+	}
 	return nil
+}
+
+// videoFlags are render's made-up video: who has a camera on or off, who
+// shares, what's on the stage, and the buttons' states.
+type videoFlags struct {
+	cams, camOff, share, muted string
+	stage, camera, sharing     string
+	camErr, pickCam            string
+	badge, noCams              bool
+}
+
+func (vf *videoFlags) register(fs *flag.FlagSet) {
+	fs.StringVar(&vf.cams, "cams", "", "people with a camera on, comma-separated: a trailing * is talking; You is you (mirrored); others not in -people join it")
+	fs.StringVar(&vf.camOff, "cam-off", "", "people in the call with their camera off, comma-separated (their tiles show initials)")
+	fs.StringVar(&vf.share, "share", "", "people sharing a screen, comma-separated")
+	fs.StringVar(&vf.stage, "stage", "", "with -share: what's on the stage, board or share (default: the share, as when it starts)")
+	fs.BoolVar(&vf.badge, "badge", false, "with a share on the stage: the board changed since it was last on stage")
+	fs.StringVar(&vf.muted, "muted", "", "people whose tiles show the muted mic, comma-separated (you: -mic muted)")
+	fs.StringVar(&vf.camera, "camera", "", "the Camera button: on|off|busy|error (default: on when -cams has You)")
+	fs.StringVar(&vf.sharing, "sharing", "", "the Share button: on|off|busy|error")
+	fs.StringVar(&vf.camErr, "cam-err", "", "with -camera error: the call's reason (default: the stub's error, as the button hears it)")
+	fs.StringVar(&vf.pickCam, "pick-camera", "desk", "with -devices: the camera picked (a UID of the made-up cameras; empty is the default)")
+	fs.BoolVar(&vf.noCams, "no-cameras", false, "with -devices: the cameras can't be listed (the stub's error)")
+}
+
+// splitNames splits a comma-separated list, trimmed, dropping empties.
+func splitNames(s string) []string {
+	var out []string
+	for _, n := range strings.Split(s, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// people is -people with everyone the video flags name added: you first,
+// then the rest in the order they're named.
+func (vf *videoFlags) people(people string) string {
+	names := splitNames(people)
+	if len(names) == 0 && (vf.cams != "" || vf.camOff != "" || vf.share != "" || vf.camera != "" || vf.sharing != "") {
+		names = []string{"You"}
+	}
+	have := map[string]bool{}
+	for _, n := range names {
+		have[strings.TrimRight(n, "*!")] = true
+	}
+	have["You"] = true
+	for _, list := range []string{vf.cams, vf.camOff, vf.share} {
+		for _, n := range splitNames(list) {
+			if base := strings.TrimRight(n, "*!"); !have[base] {
+				have[base] = true
+				names = append(names, n)
+			}
+		}
+	}
+	return strings.Join(names, ",")
+}
+
+// apply gives s's call the made-up video: a pattern camera for everyone in
+// -cams (each at a frame number of their own, so they look different;
+// yours mirrored), a pattern screen for everyone in -share, and the stage
+// and the buttons as asked. It returns the tracks, to report the sizes
+// they were told.
+func (vf *videoFlags) apply(s *meetingScene) ([]*fakeTrack, error) {
+	c := s.call
+	st := &c.st
+	ids := map[string]string{"You": st.self}
+	for _, p := range st.people {
+		ids[p.Name] = p.Identity
+	}
+	id := func(n string) (string, error) {
+		n = strings.TrimRight(n, "*!")
+		if i, ok := ids[n]; ok {
+			return i, nil
+		}
+		return "", fmt.Errorf("%q isn't in the call", n)
+	}
+	var fakes []*fakeTrack
+	v := &c.vid
+	for i, n := range splitNames(vf.cams) {
+		who, err := id(n)
+		if err != nil {
+			return nil, err
+		}
+		if strings.HasSuffix(n, "*") {
+			st.talking[who] = true
+		}
+		if who == st.self {
+			f := video.NewFrame(640, 360)
+			video.Draw(&f, 1234, false)
+			f.Mirror = true
+			v.self, v.camera = &video.Latest{}, true
+			v.self.Put(f)
+			continue
+		}
+		t := newFakeTrack(who, rtc.Camera, 640, 360, uint32(1000*(i+1)+i*97))
+		fakes = append(fakes, t)
+		v.tracks = append(v.tracks, t)
+	}
+	for _, n := range splitNames(vf.camOff) {
+		if _, err := id(n); err != nil {
+			return nil, err
+		}
+	}
+	for i, n := range splitNames(vf.share) {
+		who, err := id(n)
+		if err != nil {
+			return nil, err
+		}
+		t := newFakeTrack(who, rtc.Screen, 1440, 900, uint32(31337+i*500))
+		fakes = append(fakes, t)
+		v.tracks = append(v.tracks, t)
+	}
+	if vf.muted != "" {
+		s.mutedTiles = map[string]bool{}
+		for _, n := range splitNames(vf.muted) {
+			who, err := id(n)
+			if err != nil {
+				return nil, err
+			}
+			s.mutedTiles[who] = true
+		}
+	}
+	// What the stage shows: the newest share takes it, as when it starts,
+	// unless -stage board says the board's back.
+	tabs := screenTabs(c.snapshot(), *v)
+	s.followShares(tabs)
+	switch vf.stage {
+	case "", "share":
+	case "board":
+		s.onStage = ""
+	default:
+		return nil, fmt.Errorf("-stage %q: want board or share", vf.stage)
+	}
+	if vf.badge {
+		s.boardSeen = s.st.seq - 1
+	}
+	errText := errVideoNotYet.Error()
+	switch vf.camera {
+	case "":
+	case "on":
+		v.camera = true
+	case "off":
+		v.camera, v.self = false, nil
+	case "busy":
+		s.asks.camBusy = true
+	case "error":
+		v.camera, v.self = false, nil
+		if vf.camErr != "" {
+			v.camErr = vf.camErr
+		} else {
+			s.asks.camErr = errText
+		}
+	default:
+		return nil, fmt.Errorf("-camera %q: want on, off, busy or error", vf.camera)
+	}
+	switch vf.sharing {
+	case "", "off":
+	case "on":
+		v.sharing = true
+	case "busy":
+		s.asks.shareBusy = true
+	case "error":
+		s.asks.shareErr = errText
+	default:
+		return nil, fmt.Errorf("-sharing %q: want on, off, busy or error", vf.sharing)
+	}
+	return fakes, nil
+}
+
+// fakeTrack is a remote video for render: one pattern frame, and the
+// size it was last told.
+type fakeTrack struct {
+	id   string
+	kind rtc.VideoKind
+	slot video.Latest
+	w, h int
+}
+
+func newFakeTrack(id string, kind rtc.VideoKind, w, h int, n uint32) *fakeTrack {
+	t := &fakeTrack{id: id, kind: kind, w: -1, h: -1}
+	f := video.NewFrame(w, h)
+	video.Draw(&f, n, false)
+	t.slot.Put(f)
+	return t
+}
+
+func (t *fakeTrack) Identity() string    { return t.id }
+func (t *fakeTrack) Kind() rtc.VideoKind { return t.kind }
+func (t *fakeTrack) SetSize(w, h int)    { t.w, t.h = w, h }
+func (t *fakeTrack) Take(after uint64, fn func(video.Frame)) (uint64, bool) {
+	return t.slot.Take(after, fn)
+}
+
+// renderCameras are made-up cameras for render -devices.
+var renderCameras = []cameraDevice{
+	{UID: "built-in", Name: "Built-in Camera", Transport: "built-in", Default: true},
+	{UID: "desk", Name: "Desk Camera", Transport: "USB"},
+	{UID: "phone", Name: "Phone Camera", Transport: "Continuity"},
 }
 
 func writePNG(path string, img image.Image) error {

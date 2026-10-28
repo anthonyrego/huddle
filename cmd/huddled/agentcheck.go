@@ -585,13 +585,14 @@ func (r *report) continuity(evs []agent.Event) {
 		}
 	}
 	r.add("continuity: %d go-aways, %d connections (%d resumed), %d transcription rotations, %d errors", goAways, connects, resumed, rotations, errs)
+	// The rounds, wherever the model kept them: the notes panel, or a note.
 	var rounds []string
 	for _, line := range strings.Split(r.finalDigest, "\n") {
-		if strings.HasPrefix(line, "- ") && strings.Contains(strings.ToLower(line), "round") {
-			rounds = append(rounds, strings.TrimPrefix(line, "- "))
+		if strings.Contains(strings.ToLower(line), "round") {
+			rounds = append(rounds, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- ")))
 		}
 	}
-	r.add("  notes hold %d round lines: %s", len(rounds), strings.Join(rounds, " | "))
+	r.add("  the board's round lines: %s", strings.Join(rounds, " | "))
 }
 
 // renders draws the final board twice, as two apps would, and compares.

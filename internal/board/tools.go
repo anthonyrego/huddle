@@ -74,9 +74,10 @@ func Tools() []*genai.Tool {
 			}, "id", "label", "members"),
 		},
 		{
-			Name:        Annotate,
-			Description: "Write a short line under a box: a number, a source, a caveat. Empty text removes the note.",
-			Behavior:    nb,
+			Name: Annotate,
+			Description: "Write a short line under one box: a number, a source, a caveat about that box. Empty text removes it. " +
+				"The meeting's notes (\"add to the notes\", decisions, action items) go in the notes panel instead: notes.",
+			Behavior: nb,
 			Parameters: object(map[string]*genai.Schema{
 				"target": str("Id of the box."),
 				"text":   str("A few words."),
@@ -128,7 +129,7 @@ func Tools() []*genai.Tool {
 		{
 			Name: Notes,
 			Description: "The meeting's notes panel beside the board: decisions, action items with owners, open questions, key numbers. " +
-				"Add a line when someone asks you to note something, and keep it up to date in auto mode.",
+				"Add a line when someone asks you to note something or add to the notes without naming a box, and keep it up to date in auto mode.",
 			Behavior: nb,
 			Parameters: object(map[string]*genai.Schema{
 				"lines":   strs("Short lines to add, like \"Decided: ship Friday\" or \"Sam: send the draft by Monday\"."),

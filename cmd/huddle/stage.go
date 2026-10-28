@@ -76,69 +76,90 @@ func (s *meetingScene) onStageTab(tabs []shareTab) *shareTab {
 // boardBadge is whether the board has changed since it was last on stage.
 func (s *meetingScene) boardBadge() bool { return s.onStage != "" && s.st.seq > s.boardSeen }
 
-// drawTabs draws the tabs at the top of the stage, beside the status pill
-// (pill), while anything is shared, and returns where (empty: no tabs).
-func (s *meetingScene) drawTabs(c *ui.Ctx, l *draw.List, stage, pill draw.Rect, tabs []shareTab) draw.Rect {
-	s.tabHits = s.tabHits[:0]
+// The tabs' measures.
+const (
+	tabInset  = 3  // between the strip's edge and the chosen tab
+	tabPadX   = 12 // either side of a label
+	tabBadge  = 7
+	tabMaxLab = 180
+	// pillMinW is the least the status pill keeps beside the tabs; with
+	// less room they go under it.
+	pillMinW = 150
+)
+
+// tabSeg is one tab, measured.
+type tabSeg struct {
+	id    string
+	lay   text.Layout
+	w     float32
+	badge bool
+}
+
+// measureTabs measures the tabs while anything is shared, and the width
+// the strip may take: with room for the board's badge whether it shows or
+// not, so what shares the row with the status pill never changes with it.
+func (s *meetingScene) measureTabs(c *ui.Ctx, stage draw.Rect, tabs []shareTab) ([]tabSeg, float32) {
 	if len(tabs) == 0 {
+		return nil, 0
+	}
+	segs := []tabSeg{{id: "", lay: s.tc.lay(c, "Whiteboard", text.SansSemibold, 12.5), badge: s.boardBadge()}}
+	for _, t := range tabs {
+		segs = append(segs, tabSeg{id: t.id, lay: s.tc.lay(c, t.label, text.SansSemibold, 12.5)})
+	}
+	most := float32(2*tabInset + tabBadge + 6)
+	for i := range segs {
+		segs[i].w = min(segs[i].lay.Width, tabMaxLab) + 2*tabPadX
+		most += segs[i].w
+		if segs[i].badge {
+			segs[i].w += tabBadge + 6
+		}
+	}
+	return segs, min(most, stage.W-32)
+}
+
+// drawTabs draws the tabs (segs) at the top of the stage, beside the
+// status pill (pill) or under it, and returns where (empty: no tabs).
+func (s *meetingScene) drawTabs(c *ui.Ctx, l *draw.List, stage, pill draw.Rect, segs []tabSeg, under bool) draw.Rect {
+	s.tabHits = s.tabHits[:0]
+	if len(segs) == 0 {
 		return draw.Rect{}
 	}
 	pal := c.Pal
-	const (
-		inset  = 3  // between the strip's edge and the chosen tab
-		padX   = 12 // either side of a label
-		badge  = 7
-		maxLab = 180
-	)
-	type seg struct {
-		id    string
-		lay   text.Layout
-		w     float32
-		badge bool
-	}
-	segs := []seg{{id: "", lay: s.tc.lay(c, "Whiteboard", text.SansSemibold, 12.5), badge: s.boardBadge()}}
-	for _, t := range tabs {
-		segs = append(segs, seg{id: t.id, lay: s.tc.lay(c, t.label, text.SansSemibold, 12.5)})
-	}
-	total := float32(2 * inset)
-	for i := range segs {
-		segs[i].w = min(segs[i].lay.Width, maxLab) + 2*padX
-		if segs[i].badge {
-			segs[i].w += badge + 6
-		}
-		total += segs[i].w
+	total := float32(2 * tabInset)
+	for _, sg := range segs {
+		total += sg.w
 	}
 	total = min(total, stage.W-32)
 	r := draw.Rect{X: stage.X + (stage.W-total)/2, Y: pill.Y, W: total, H: pill.H}
 	if r.X < pill.Right()+10 {
 		r.X = pill.Right() + 10
 	}
-	if r.Right() > stage.Right()-16 { // no room beside the pill: under it
+	if under {
 		r.X, r.Y = stage.X+16, pill.Bottom()+8
 	}
 	l.Shadow(r, pal.Shadow, draw.Uniform(r.H/2), 8)
 	l.BorderedRect(r, pal.Surface, pal.Border, 1, draw.Uniform(r.H/2))
-	x := r.X + inset
+	x := r.X + tabInset
 	for i, sg := range segs {
 		w := sg.w
 		if i == len(segs)-1 {
-			w = r.Right() - inset - x // the last takes what's left, when squeezed
+			w = r.Right() - tabInset - x // the last takes what's left, when squeezed
 		}
-		tr := draw.Rect{X: x, Y: r.Y + inset, W: w, H: r.H - 2*inset}
+		tr := draw.Rect{X: x, Y: r.Y + tabInset, W: w, H: r.H - 2*tabInset}
 		col := pal.TextMuted
 		if sg.id == s.onStage {
 			l.BorderedRect(tr, pal.SurfaceAlt, pal.Border, 1, draw.Uniform(tr.H/2))
 			col = pal.Text
 		}
-		room := tr.W - 2*padX
+		room := tr.W - 2*tabPadX
 		if sg.badge {
-			room -= badge + 6
+			room -= tabBadge + 6
 		}
 		ty := tr.Y + (tr.H-sg.lay.Height)/2
-		putFitAt(c, &s.tc, l, sg.lay, tr.X+padX, ty, room, col, text.SansSemibold, 12.5)
+		putFitAt(c, &s.tc, l, sg.lay, tr.X+tabPadX, ty, room, col, text.SansSemibold, 12.5)
 		if sg.badge {
-			bx := tr.X + padX + min(sg.lay.Width, room) + 6
-			l.Rect(draw.Rect{X: bx, Y: tr.Y + tr.H/2 - badge/2, W: badge, H: badge}, pal.Accent, draw.Uniform(badge/2))
+			bx := tr.X + tabPadX + min(sg.lay.Width, room) + 6
+			l.Rect(draw.Rect{X: bx, Y: tr.Y + tr.H/2 - tabBadge/2, W: tabBadge, H: tabBadge}, pal.Accent, draw.Uniform(tabBadge/2))
 		}
 		s.tabHits = append(s.tabHits, tabHit{r: tr, id: sg.id})
 		x += w

@@ -9,7 +9,10 @@ import (
 
 	"github.com/anthonyrego/huddle/internal/draw"
 	"github.com/anthonyrego/huddle/internal/rtc"
+	"github.com/anthonyrego/huddle/internal/text"
+	"github.com/anthonyrego/huddle/internal/theme"
 	"github.com/anthonyrego/huddle/internal/video"
+	"github.com/anthonyrego/huddle/internal/wire"
 )
 
 // The tiles run down the right while the stage keeps enough width, shrink
@@ -264,5 +267,49 @@ func TestCameraRows(t *testing.T) {
 	rows = cameraRows(renderCameras, nil, devicePrefs{Camera: "gone"}, videoState{}, "")
 	if r := rows[len(rows)-1]; r.kind != rowNote || r.label != "The one picked isn't plugged in: using the default" {
 		t.Fatalf("a camera picked that's gone: last row %+v", r)
+	}
+}
+
+// TestShareKeepsItsSize: what the status pill says (a long command, the
+// board's badge) never sends the tabs to a row of their own, so a share
+// on stage keeps its size while the whiteboard works (it shrank and grew
+// with every command in a narrow window).
+func TestShareKeepsItsSize(t *testing.T) {
+	sh, err := text.NewEmbeddedShaper()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range [][2]float32{{700, 480}, {640, 420}, {1200, 800}} {
+		s := newMeetingScene(sh, func() float32 { return 2 }, &meeting{})
+		vf := videoFlags{cams: "You,Ann,Bob,Cy", camOff: "Sam,Dan,Kim", share: "Dee"}
+		s.call = renderCall(vf.people(""), "")
+		tracks, err := vf.apply(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var dee *fakeTrack
+		for _, tr := range tracks {
+			if tr.kind == rtc.Screen {
+				dee = tr
+			}
+		}
+		now := time.Now()
+		var sizes [][2]int
+		for _, a := range []wire.AgentStatus{
+			{State: wire.AgentIdle},
+			{State: wire.AgentWorking, Detail: "Kim: add a monitoring step after deploy and note that it runs for an hour."},
+			{State: wire.AgentIdle},
+		} {
+			st := s.st
+			st.rev++
+			st.conn, st.agent = connConnected, a
+			s.apply(st, now)
+			var l draw.List
+			s.draw(&l, size[0], size[1], theme.For(false), now)
+			sizes = append(sizes, [2]int{dee.w, dee.h})
+		}
+		if sizes[0][0] <= 0 || sizes[1] != sizes[0] || sizes[2] != sizes[0] {
+			t.Errorf("%v window: the share was asked for %v as the status changed", size, sizes)
+		}
 	}
 }

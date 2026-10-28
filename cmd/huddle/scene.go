@@ -118,8 +118,19 @@ func (s *meetingScene) draw(l *draw.List, w, h float32, pal theme.Palette, now t
 		s.boardSeen = s.st.seq
 	}
 	s.drawTiles(c, l, sl, ps)
-	pill := s.drawStatus(c, l, stage)
-	tabsRect := s.drawTabs(c, l, stage, pill, tabs)
+	// The pill and the tabs share the stage's top row when the tabs leave
+	// the pill room enough, whatever it says; the tabs go under it if not.
+	segs, tabsW := s.measureTabs(c, stage, tabs)
+	pillW, under := stage.W-32, false
+	if len(segs) > 0 {
+		if beside := pillW - tabsW - 10; beside >= pillMinW {
+			pillW = beside
+		} else {
+			under = true
+		}
+	}
+	pill := s.drawStatus(c, l, stage, pillW)
+	tabsRect := s.drawTabs(c, l, stage, pill, segs, under)
 	s.layoutField(c, stage)
 	if share != nil {
 		top := max(pill.Bottom(), tabsRect.Bottom()) + 12
@@ -153,9 +164,9 @@ func (s *meetingScene) drawField(c *ui.Ctx, l *draw.List) {
 }
 
 // drawStatus is the pill at the stage's top left: the connection's state,
-// and what the whiteboard is doing once it's in the room. It returns
-// where it drew it.
-func (s *meetingScene) drawStatus(c *ui.Ctx, l *draw.List, stage draw.Rect) draw.Rect {
+// and what the whiteboard is doing once it's in the room, at most maxW
+// wide (a longer line ends in "…"). It returns where it drew it.
+func (s *meetingScene) drawStatus(c *ui.Ctx, l *draw.List, stage draw.Rect, maxW float32) draw.Rect {
 	status := s.st.conn
 	if status == "" {
 		status = connOffline
@@ -182,11 +193,11 @@ func (s *meetingScene) drawStatus(c *ui.Ctx, l *draw.List, stage draw.Rect) draw
 		}
 	}
 	lay := s.tc.lay(c, status, text.SansSemibold, 12.5)
-	r := draw.Rect{X: stage.X + 16, Y: stage.Y + 14, W: lay.Width + 34, H: lay.Height + 14}
+	r := draw.Rect{X: stage.X + 16, Y: stage.Y + 14, W: min(lay.Width+34, maxW), H: lay.Height + 14}
 	l.Shadow(r, c.Pal.Shadow, draw.Uniform(r.H/2), 8)
 	l.BorderedRect(r, c.Pal.Surface, c.Pal.Border, 1, draw.Uniform(r.H/2))
 	l.Rect(draw.Rect{X: r.X + 13, Y: r.Y + r.H/2 - 4, W: 8, H: 8}, dot, draw.Uniform(4))
-	drawAt(l, lay, r.X+27, r.Y+7, c.Pal.Text)
+	putFitAt(c, &s.tc, l, lay, r.X+27, r.Y+7, r.W-34, c.Pal.Text, text.SansSemibold, 12.5)
 	return r
 }
 

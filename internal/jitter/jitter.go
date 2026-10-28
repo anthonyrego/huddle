@@ -108,6 +108,11 @@ type Buffer struct {
 	jitter      float64 // RFC 3550, seconds
 	target      time.Duration
 
+	// playingTS and playingAt are where the last pull began: the RTP
+	// timestamp of its first sample, and when (for lip sync).
+	playingTS int64
+	playingAt time.Time
+
 	st Stats
 }
 
@@ -257,17 +262,21 @@ func (b *Buffer) heldAfter(seq int64) *entry {
 func (b *Buffer) Pull(out []float32) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	marked := false
 	for filled := 0; filled < len(out); {
+		if !b.started && !b.start() {
+			clear(out[filled:])
+			return
+		}
+		if !marked {
+			b.playingTS, b.playingAt, marked = b.playTS, time.Now(), true
+		}
 		if len(b.pending) > 0 {
 			k := copy(out[filled:], b.pending)
 			b.pending = b.pending[k:]
 			b.playTS += int64(k)
 			filled += k
 			continue
-		}
-		if !b.started && !b.start() {
-			clear(out[filled:])
-			return
 		}
 		if !b.produce() {
 			b.underrun(out[filled:])
@@ -438,4 +447,16 @@ func (b *Buffer) Stats() Stats {
 	s.Target, s.Level = b.target, dur(b.level())
 	s.Jitter = time.Duration(b.jitter * float64(time.Second))
 	return s
+}
+
+// Playing is where the last pull began: the RTP timestamp of the first
+// sample it took, and when. ok is false before the stream has started
+// playing. A video track holds its frames against this (lip sync).
+func (b *Buffer) Playing() (ts uint32, at time.Time, ok bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.playingAt.IsZero() {
+		return 0, time.Time{}, false
+	}
+	return uint32(b.playingTS), b.playingAt, true
 }

@@ -433,3 +433,25 @@ func speechFixture(t *testing.T) []float32 {
 	}
 	return pcm.F32FromS16(data)
 }
+
+// TestPlaying: the position a pull began at is the RTP timestamp of the
+// first sample it took (lip sync holds video against it).
+func TestPlaying(t *testing.T) {
+	b := New(fakeDec{}, Config{})
+	if _, _, ok := b.Playing(); ok {
+		t.Fatal("playing before anything came")
+	}
+	now := time.Now()
+	const ts0 = 0xfffff000 // across the wrap
+	for k := range 5 {
+		b.Push(Packet{Seq: uint16(k), TS: ts0 + uint32(k*opus.FrameSamples), Payload: payload(k)}, now)
+	}
+	out := make([]float32, 480)
+	for k := range 7 {
+		b.Pull(out)
+		ts, at, ok := b.Playing()
+		if want := uint32(ts0 + k*480); !ok || ts != want || time.Since(at) > time.Second {
+			t.Fatalf("pull %d: playing %d (%v), want %d", k, ts, ok, want)
+		}
+	}
+}

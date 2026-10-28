@@ -130,6 +130,10 @@ func (s *Speaker) Write(ctx context.Context, frame []float32) error {
 	return nil
 }
 
+// Latency is how long after a frame is written it plays: Write waits for
+// its turn, a frame after the last one's.
+func (s *Speaker) Latency() time.Duration { return frameDur }
+
 // Start is when the first recorded sample played.
 func (s *Speaker) Start() time.Time {
 	s.mu.Lock()

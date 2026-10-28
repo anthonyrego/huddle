@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/anthonyrego/huddle/internal/config"
+	"github.com/anthonyrego/huddle/internal/devjoin"
 	"github.com/anthonyrego/huddle/internal/logx"
 	"github.com/anthonyrego/huddle/internal/pcm"
 	"github.com/anthonyrego/huddle/internal/platform/macvideo"
@@ -167,7 +168,7 @@ func runVideo(args []string) error {
 		if err != nil {
 			return err
 		}
-		if recv, err = recvConn.Connect(ctx, rtc.Join{URL: j.LiveKitURL, Token: j.Token, Identity: j.Identity}, run.events()); err != nil {
+		if recv, err = recvConn.Connect(ctx, devjoin.RTC(j), run.events()); err != nil {
 			return err
 		}
 		defer recv.Leave()
@@ -197,7 +198,7 @@ func runVideo(args []string) error {
 		if !*loop && *out != "" {
 			ev = run.events()
 		}
-		if send, err = conn.Connect(ctx, rtc.Join{URL: j.LiveKitURL, Token: j.Token, Identity: j.Identity}, ev); err != nil {
+		if send, err = conn.Connect(ctx, devjoin.RTC(j), ev); err != nil {
 			return err
 		}
 		defer send.Leave()

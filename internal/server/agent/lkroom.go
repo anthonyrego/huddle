@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
-	"sync"
+	"log/slog"
 	"time"
 
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -13,40 +13,45 @@ import (
 	"github.com/anthonyrego/huddle/internal/server/lktoken"
 )
 
-// lkRoom is the agent's place in the room's LiveKit session: it hears
-// every person's audio track and publishes its own voice.
+// LiveKit is the whiteboard's Media on a LiveKit server: it joins each room
+// with a token it mints with the server's API key.
+type LiveKit struct {
+	Minter lktoken.Minter
+	URL    string // LiveKit's URL as huddled reaches it (ws://host:7880)
+}
+
+// lkRoom is the whiteboard in one LiveKit room: it hears every person's
+// audio track and publishes its own voice.
 type lkRoom struct {
 	room  *lksdk.Room
 	track *lksdk.LocalTrack
-
-	mu     sync.Mutex
-	people map[string]bool // identities of the people (not agents) in the room
 }
 
-// join enters the room as the whiteboard, an agent participant.
-func (a *Agent) join(ctx context.Context) (*lkRoom, error) {
-	m := a.cfg.Minter
+// Join enters the room as the whiteboard, an agent participant.
+func (l LiveKit) Join(ctx context.Context, room string, h Hearing) (MediaRoom, error) {
+	m := l.Minter
 	m.TTL = 12 * time.Hour // it may need to rejoin long after it started
-	tok, err := m.Mint(lktoken.Grant{Room: a.cfg.Room, Identity: Identity, Name: "Whiteboard", Agent: true})
+	tok, err := m.Mint(lktoken.Grant{Room: room, Identity: Identity, Name: "Whiteboard", Agent: true})
 	if err != nil {
 		return nil, err
 	}
-	r := &lkRoom{people: map[string]bool{}}
+	r := &lkRoom{}
 	cb := lksdk.NewRoomCallback()
 	cb.OnParticipantConnected = func(rp *lksdk.RemoteParticipant) {
 		if rp.Kind() != lksdk.ParticipantAgent {
-			r.set(rp.Identity(), true)
-			a.setName(rp.Identity(), rp.Name())
+			h.Arrived(rp.Identity(), rp.Name())
 		}
 	}
-	cb.OnParticipantDisconnected = func(rp *lksdk.RemoteParticipant) { r.set(rp.Identity(), false) }
+	cb.OnParticipantDisconnected = func(rp *lksdk.RemoteParticipant) {
+		if rp.Kind() != lksdk.ParticipantAgent {
+			h.Left(rp.Identity())
+		}
+	}
 	cb.OnTrackSubscribed = func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 		if track.Kind() != webrtc.RTPCodecTypeAudio || rp.Kind() == lksdk.ParticipantAgent {
 			return
 		}
-		a.setName(rp.Identity(), rp.Name())
-		r.set(rp.Identity(), true)
-		go a.listen(ctx, track, rp.Identity(), a.name(rp.Identity()))
+		h.Voice(rp.Identity(), rp.Name(), track)
 	}
 	// Audio only: the whiteboard never shows video, so it subscribes to
 	// each audio track as it's published (the ones there at join come the
@@ -57,54 +62,46 @@ func (a *Agent) join(ctx context.Context) (*lkRoom, error) {
 		}
 		go func() {
 			if err := pub.SetSubscribed(true); err != nil {
-				a.log.Warn("agent: subscribe", "identity", rp.Identity(), "err", err)
+				slog.Warn("agent: subscribe", "room", room, "identity", rp.Identity(), "err", err)
 			}
 		}()
 	}
-	room, err := lksdk.ConnectToRoomWithToken(a.cfg.LiveKitURL, tok, cb, lksdk.WithAutoSubscribe(false))
+	r.room, err = lksdk.ConnectToRoomWithToken(l.URL, tok, cb, lksdk.WithAutoSubscribe(false))
 	if err != nil {
 		return nil, fmt.Errorf("agent: join LiveKit: %w", err)
 	}
-	r.room = room
-	for _, rp := range room.GetRemoteParticipants() {
+	for _, rp := range r.room.GetRemoteParticipants() {
 		if rp.Kind() != lksdk.ParticipantAgent {
-			r.set(rp.Identity(), true)
-			a.setName(rp.Identity(), rp.Name())
+			h.Arrived(rp.Identity(), rp.Name())
 		}
 	}
 	r.track, err = lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2})
 	if err != nil {
-		room.Disconnect()
+		r.room.Disconnect()
 		return nil, err
 	}
-	if _, err := room.LocalParticipant.PublishTrack(r.track, &lksdk.TrackPublicationOptions{Name: "whiteboard voice"}); err != nil {
-		room.Disconnect()
+	if _, err := r.room.LocalParticipant.PublishTrack(r.track, &lksdk.TrackPublicationOptions{Name: "whiteboard voice"}); err != nil {
+		r.room.Disconnect()
 		return nil, fmt.Errorf("agent: publish the voice: %w", err)
 	}
 	return r, nil
 }
 
-func (r *lkRoom) set(identity string, in bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if in {
-		r.people[identity] = true
-	} else {
-		delete(r.people, identity)
+// People counts the remote participants who aren't agents.
+func (r *lkRoom) People() int {
+	n := 0
+	for _, rp := range r.room.GetRemoteParticipants() {
+		if rp.Kind() != lksdk.ParticipantAgent {
+			n++
+		}
 	}
+	return n
 }
 
-// count is how many people are in the room.
-func (r *lkRoom) count() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.people)
-}
-
-// publish writes one 20 ms Opus packet to the voice track at RTP
-// timestamp ts.
-func (r *lkRoom) publish(pkt []byte, ts uint32) error {
+// Publish writes one 20 ms Opus packet to the voice track at RTP timestamp
+// ts.
+func (r *lkRoom) Publish(pkt []byte, ts uint32) error {
 	return r.track.WriteSample(media.Sample{Data: pkt, Duration: 20 * time.Millisecond, PacketTimestamp: ts}, nil)
 }
 
-func (r *lkRoom) leave() { r.room.Disconnect() }
+func (r *lkRoom) Leave() { r.room.Disconnect() }

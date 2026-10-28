@@ -19,6 +19,7 @@ var pure = []string{
 	"internal/board",
 	"internal/config",
 	"internal/cue",
+	"internal/devjoin",
 	"internal/draw",
 	"internal/fixturemeet",
 	"internal/gate",

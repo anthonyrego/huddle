@@ -1,43 +1,18 @@
 package fixturemeet
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
+	"github.com/anthonyrego/huddle/internal/devjoin"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
-
-// Join asks a dev server to let name into room.
-func Join(ctx context.Context, server, room, name string) (wire.Joined, error) {
-	var j wire.Joined
-	body, _ := json.Marshal(wire.DevJoin{Room: room, Name: name})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(server, "/")+"/dev/join", bytes.NewReader(body))
-	if err != nil {
-		return j, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return j, err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(res.Body)
-		return j, fmt.Errorf("join: %s: %s", res.Status, b)
-	}
-	return j, json.NewDecoder(res.Body).Decode(&j)
-}
 
 // Bot is a fixture participant: a name and the track it plays.
 type Bot struct {
@@ -49,19 +24,23 @@ type Bot struct {
 	t     *Track
 }
 
-// Connect joins the bot to the room through the dev server and publishes
-// its (still quiet) track.
+// Connect joins the bot to the room through the dev server, as a bot (the
+// echo bot leaves it alone), and publishes its (still quiet) track.
 func (b *Bot) Connect(ctx context.Context, server, room string) error {
 	t, err := ReadTrack(b.Ogg)
 	if err != nil {
 		return fmt.Errorf("%w (make fixtures renders it)", err)
 	}
 	b.t = t
-	j, err := Join(ctx, server, room, b.Name)
+	j, err := devjoin.Join(ctx, server, wire.DevJoin{Room: room, Name: b.Name, Bot: true})
 	if err != nil {
 		return err
 	}
-	b.room, err = lksdk.ConnectToRoomWithToken(j.LiveKitURL, j.Token, lksdk.NewRoomCallback(), lksdk.WithAutoSubscribe(false))
+	m := devjoin.RTC(j)
+	if m.Kind != wire.MediaLiveKit {
+		return fmt.Errorf("%s: the server's media is %s, and fixture bots join only LiveKit so far", b.Name, m.Kind)
+	}
+	b.room, err = lksdk.ConnectToRoomWithToken(m.URL, m.Token, lksdk.NewRoomCallback(), lksdk.WithAutoSubscribe(false))
 	if err != nil {
 		return fmt.Errorf("%s: LiveKit: %w", b.Name, err)
 	}

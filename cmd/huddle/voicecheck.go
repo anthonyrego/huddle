@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/anthonyrego/huddle/internal/config"
+	"github.com/anthonyrego/huddle/internal/devjoin"
 	"github.com/anthonyrego/huddle/internal/logx"
 	"github.com/anthonyrego/huddle/internal/pcm"
 	"github.com/anthonyrego/huddle/internal/rtc"
@@ -163,7 +164,7 @@ func loop(ctx context.Context, server, room string, src []float32, sim simFlags)
 	if err != nil {
 		return res, err
 	}
-	hear, err := sim.connector().Connect(ctx, rtc.Join{URL: hj.LiveKitURL, Token: hj.Token, Identity: hj.Identity}, rtc.Events{})
+	hear, err := sim.connector().Connect(ctx, devjoin.RTC(hj), rtc.Events{})
 	if err != nil {
 		return res, err
 	}
@@ -172,7 +173,7 @@ func loop(ctx context.Context, server, room string, src []float32, sim simFlags)
 	if err := hear.Play(spk); err != nil {
 		return res, err
 	}
-	send, err := (&lkrtc.Connector{}).Connect(ctx, rtc.Join{URL: sj.LiveKitURL, Token: sj.Token, Identity: sj.Identity}, rtc.Events{})
+	send, err := (&lkrtc.Connector{}).Connect(ctx, devjoin.RTC(sj), rtc.Events{})
 	if err != nil {
 		return res, err
 	}

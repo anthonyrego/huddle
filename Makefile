@@ -83,9 +83,11 @@ dev-down:
 livekit:
 	livekit-server --dev --bind 0.0.0.0 --node-ip "$(LAN_IP)"
 
-# The server on this Mac, reachable from the LAN, in dev mode.
+# The server on this Mac, reachable from the LAN, in dev mode. Its media
+# goes through LiveKit (make livekit), or HUDDLE_MEDIA=builtin make server
+# for its own SFU, which offers LAN_IP.
 server: build
-	@HUDDLE_DEV=1 DATABASE_URL="$(DATABASE_URL)" LIVEKIT_URL="$(LIVEKIT_URL)" \
+	@HUDDLE_DEV=1 DATABASE_URL="$(DATABASE_URL)" HUDDLE_NODE_IP="$(LAN_IP)" LIVEKIT_URL="$(LIVEKIT_URL)" \
 		LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret $(KEY) ./build/huddled serve $(ARGS)
 
 # Notarizes build/Huddle.app (signed with a Developer ID certificate) and
@@ -106,10 +108,10 @@ notarize: app
 lan-ip:
 	@echo $(LAN_IP)
 
-# Dev participants in ROOM, through LiveKit with the dev key:
+# Dev participants in ROOM, let in by SERVER's dev join (make server running):
 # make bot ARGS="echo"  |  make bot ARGS="play -ogg .dev/fixtures/samantha.ogg"
 bot: build
-	@LIVEKIT_URL="$(LIVEKIT_URL)" LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret ./build/huddled bot $(word 1,$(ARGS)) -room "$(ROOM)" $(wordlist 2,99,$(ARGS))
+	./build/huddled bot $(word 1,$(ARGS)) -server "$(SERVER)" -room "$(ROOM)" $(wordlist 2,99,$(ARGS))
 
 # The voice gate's file-to-file runs through LiveKit (make server running):
 # click latency, and speech at 0, 5 and 10% loss with 40 ms jitter, WAVs in .dev/out.
@@ -130,7 +132,7 @@ fixtures: build
 # make agent-check MEETING=review [ARGS="-voice answers"]
 MEETING ?= review
 agent-check: build
-	@DATABASE_URL="$(DATABASE_URL)" LIVEKIT_URL="$(LIVEKIT_URL)" LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret \
+	@DATABASE_URL="$(DATABASE_URL)" HUDDLE_NODE_IP="$(LAN_IP)" LIVEKIT_URL="$(LIVEKIT_URL)" LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret \
 		$(KEY) ./build/huddled agent-check -meeting testdata/meetings/$(MEETING).txt $(ARGS)
 
 # Dev: fixture bots join ROOM on SERVER and play MEETING (make fixtures

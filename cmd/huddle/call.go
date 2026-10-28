@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anthonyrego/huddle/internal/devjoin"
 	"github.com/anthonyrego/huddle/internal/platform/audio"
 	"github.com/anthonyrego/huddle/internal/playout"
 	"github.com/anthonyrego/huddle/internal/rtc"
@@ -271,7 +272,7 @@ func (c *call) connect(ctx context.Context, j wire.Joined, lost chan error) erro
 		// A remote video's new frame is something to draw.
 		VideoFrame: func(rtc.VideoTrack, video.Frame, lkrtc.VideoFrameInfo) { c.wakeUp() },
 	}
-	room, err := conn.Connect(ctx, rtc.Join{URL: j.LiveKitURL, Token: j.Token, Identity: j.Identity}, ev)
+	room, err := conn.Connect(ctx, devjoin.RTC(j), ev)
 	if err != nil {
 		return err
 	}

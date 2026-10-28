@@ -29,7 +29,6 @@ import (
 	"github.com/anthonyrego/huddle/internal/fixturemeet"
 	"github.com/anthonyrego/huddle/internal/server/agent"
 	"github.com/anthonyrego/huddle/internal/server/httpapi"
-	"github.com/anthonyrego/huddle/internal/server/lktoken"
 	"github.com/anthonyrego/huddle/internal/server/store"
 	"github.com/anthonyrego/huddle/internal/server/wshub"
 	"github.com/anthonyrego/huddle/internal/wire"
@@ -123,10 +122,8 @@ func runAgentCheck(args []string) error {
 	}
 	key := os.Getenv("GEMINI_API_KEY")
 	dbURL := os.Getenv("DATABASE_URL")
-	lkURL := os.Getenv("LIVEKIT_URL")
-	minter := lktoken.Minter{Key: os.Getenv("LIVEKIT_API_KEY"), Secret: os.Getenv("LIVEKIT_API_SECRET"), TTL: 10 * time.Minute}
-	if key == "" || dbURL == "" || lkURL == "" || minter.Key == "" {
-		return errors.New("needs GEMINI_API_KEY, DATABASE_URL, LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET (make agent-check sets them)")
+	if key == "" || dbURL == "" {
+		return errors.New("needs GEMINI_API_KEY and DATABASE_URL, and for HUDDLE_MEDIA=livekit (the default) LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET (make agent-check sets them)")
 	}
 	script, err := fixturemeet.Parse(*meeting)
 	if err != nil {
@@ -170,18 +167,25 @@ func runAgentCheck(args []string) error {
 		return err
 	}
 
-	rec := &recorder{start: time.Now()}
-	hub := &wshub.Hub{}
-	agents := agent.NewManager(ctx, agent.Config{
-		Store: st, Hub: recHub{hub, rec}, APIKey: key, Minter: minter, LiveKitURL: lkURL,
-		AutoEvery: *autoEvery, Trace: rec.trace, Idle: 10 * time.Minute, ReconnectEvery: *reconnect,
-	})
-	hub.OnMessage = func(room, identity string, e wire.Envelope) { agents.Deliver(room, identity, e) }
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
 	}
-	api := &httpapi.Server{Rooms: checkRooms{st}, Minter: minter, LiveKitURL: lkURL, WS: hub, Dev: true}
+	md, err := newMedia(ln.Addr().String())
+	if err != nil {
+		ln.Close()
+		return err
+	}
+	defer md.close()
+	rec := &recorder{start: time.Now()}
+	hub := &wshub.Hub{}
+	agents := agent.NewManager(ctx, agent.Config{
+		Store: st, Hub: recHub{hub, rec}, APIKey: key, Media: md.agent,
+		AutoEvery: *autoEvery, Trace: rec.trace, Idle: 10 * time.Minute, ReconnectEvery: *reconnect,
+	})
+	hub.OnMessage = func(room, identity string, e wire.Envelope) { agents.Deliver(room, identity, e) }
+	api := &httpapi.Server{Rooms: checkRooms{st}, WS: hub, Dev: true}
+	md.api(api)
 	srv := &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go srv.Serve(ln)
 	defer srv.Close()

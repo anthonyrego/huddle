@@ -8,23 +8,20 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"sort"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/anthonyrego/huddle/internal/config"
+	"github.com/anthonyrego/huddle/internal/devjoin"
 	"github.com/anthonyrego/huddle/internal/logx"
 	"github.com/anthonyrego/huddle/internal/rtc"
 	"github.com/anthonyrego/huddle/internal/rtc/fileio"
@@ -115,7 +112,7 @@ func runVoice(args []string) error {
 			mu.Unlock()
 		}
 	}
-	rm, err := conn.Connect(ctx, rtc.Join{URL: j.LiveKitURL, Token: j.Token, Identity: j.Identity}, rtc.Events{})
+	rm, err := conn.Connect(ctx, devjoin.RTC(j), rtc.Events{})
 	if err != nil {
 		return err
 	}
@@ -175,28 +172,14 @@ func printStats(rm rtc.Room) {
 	}
 }
 
-// devJoin asks the server's dev join for a LiveKit token.
+// devJoin asks the server's dev join to let name into room, for a media
+// token.
 func devJoin(ctx context.Context, server, room, name string) (wire.Joined, error) {
-	var j wire.Joined
-	body, _ := json.Marshal(wire.DevJoin{Room: room, Name: name})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(server, "/")+"/dev/join", bytes.NewReader(body))
+	j, err := devjoin.Join(ctx, server, wire.DevJoin{Room: room, Name: name})
 	if err != nil {
 		return j, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return j, err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		var e wire.Error
-		json.NewDecoder(res.Body).Decode(&e)
-		return j, fmt.Errorf("join: %s: %s", res.Status, e.Message)
-	}
-	if err := json.NewDecoder(res.Body).Decode(&j); err != nil {
-		return j, fmt.Errorf("join: %w", err)
-	}
-	slog.Info("voice: dev join", "room", j.Room, "identity", j.Identity, "livekit", j.LiveKitURL)
+	m := devjoin.RTC(j)
+	slog.Info("voice: dev join", "room", j.Room, "identity", j.Identity, "media", m.Kind, "mediaURL", m.URL)
 	return j, nil
 }

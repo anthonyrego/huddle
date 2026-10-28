@@ -56,7 +56,7 @@ func (e Envelope) Decode(v any) error {
 type Hello struct {
 	Protocol int    `json:"protocol"`
 	Room     string `json:"room"`
-	Identity string `json:"identity"` // the participant identity the LiveKit token names
+	Identity string `json:"identity"` // the participant identity the media token names
 }
 
 // Welcome answers a hello with where the meeting stands.
@@ -142,7 +142,14 @@ type Error struct {
 type DevJoin struct {
 	Room string `json:"room"`
 	Name string `json:"name"`
+	// Bot marks a dev participant (huddled bot, a fixture meeting's
+	// speakers): its identity ends in BotSuffix, so the echo bot doesn't
+	// repeat it.
+	Bot bool `json:"bot,omitempty"`
 }
+
+// BotSuffix ends the identity a dev join gives a bot.
+const BotSuffix = "-bot"
 
 // Joined answers a join with what the app needs to connect: which media
 // server the meeting's media goes through, its URL and a token for it, and

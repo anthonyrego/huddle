@@ -22,7 +22,7 @@ import (
 	"github.com/anthonyrego/huddle/internal/platform/audio"
 	"github.com/anthonyrego/huddle/internal/playout"
 	"github.com/anthonyrego/huddle/internal/rtc"
-	"github.com/anthonyrego/huddle/internal/rtc/lkrtc"
+	rtcroom "github.com/anthonyrego/huddle/internal/rtc/room"
 	"github.com/anthonyrego/huddle/internal/video"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
@@ -266,10 +266,10 @@ func (c *call) connect(ctx context.Context, j wire.Joined, lost chan error) erro
 	gen := c.vid.roomGen
 	c.mu.Unlock()
 	c.videoEvents(&ev, gen)
-	conn := &lkrtc.Connector{
+	conn := &rtcroom.Connector{
 		NewDecoder: videoDecoder,
 		// A remote video's new frame is something to draw.
-		VideoFrame: func(rtc.VideoTrack, video.Frame, lkrtc.VideoFrameInfo) { c.wakeUp() },
+		VideoFrame: func(rtc.VideoTrack, video.Frame, rtcroom.VideoFrameInfo) { c.wakeUp() },
 	}
 	room, err := conn.Connect(ctx, rtc.Join{URL: j.LiveKitURL, Token: j.Token, Identity: j.Identity}, ev)
 	if err != nil {

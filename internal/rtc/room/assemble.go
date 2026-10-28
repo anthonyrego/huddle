@@ -1,4 +1,4 @@
-package lkrtc
+package room
 
 import (
 	"time"

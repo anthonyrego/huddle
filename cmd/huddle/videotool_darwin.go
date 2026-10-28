@@ -35,7 +35,7 @@ import (
 	"github.com/anthonyrego/huddle/internal/platform/macvideo"
 	"github.com/anthonyrego/huddle/internal/rtc"
 	"github.com/anthonyrego/huddle/internal/rtc/fileio"
-	"github.com/anthonyrego/huddle/internal/rtc/lkrtc"
+	rtcroom "github.com/anthonyrego/huddle/internal/rtc/room"
 	"github.com/anthonyrego/huddle/internal/video"
 )
 
@@ -179,7 +179,7 @@ func runVideo(args []string) error {
 	var mic interface{ Start() time.Time }
 	var srcVoice []float32
 	if *in != "" {
-		conn := &lkrtc.Connector{Uplink: upBps}
+		conn := &rtcroom.Connector{Uplink: upBps}
 		if !*loop && *out != "" {
 			conn = recvConn
 			conn.Uplink = upBps
@@ -279,7 +279,7 @@ loop:
 		}
 		line := fmt.Sprintf("video: t=%2.0fs", t.Seconds())
 		if send != nil {
-			s := lkrtc.VideoSendStats(send)
+			s := rtcroom.VideoSendStats(send)
 			var layers []string
 			for _, v := range s.Videos {
 				for i, b := range v.Bitrate {
@@ -293,10 +293,10 @@ loop:
 			}
 		}
 		if recv != nil {
-			for _, ts := range lkrtc.VideoTracks(recv) {
+			for _, ts := range rtcroom.VideoTracks(recv) {
 				line += fmt.Sprintf("; got %s %s %dx%d, %d frames", ts.Identity, ts.Kind, ts.W, ts.H, ts.Frames)
 			}
-			if js, ok := lkrtc.TrackStats(recv)[run.sendID]; ok && audio {
+			if js, ok := rtcroom.TrackStats(recv)[run.sendID]; ok && audio {
 				line += fmt.Sprintf("; voice jitter delay %v, underrun %v", js.Target.Round(time.Millisecond), time.Duration(js.Underrun)*time.Second/rtc.SampleRate)
 			}
 		}
@@ -312,7 +312,7 @@ loop:
 	wall := time.Since(wall0)
 	cpu := time.Duration(ru1.Utime.Nano() + ru1.Stime.Nano() - ru0.Utime.Nano() - ru0.Stime.Nano())
 	if send != nil {
-		s := lkrtc.VideoSendStats(send)
+		s := rtcroom.VideoSendStats(send)
 		for _, v := range s.Videos {
 			fmt.Printf("sent     %s: layers %s, access units %v, keyframes %v (asked for %v), largest %v bytes, probe filler %v bytes\n", v.Kind, layerList(v.Layers), v.Written, v.KeysOut, v.Keys, v.Biggest, v.Padding)
 		}
@@ -337,7 +337,7 @@ loop:
 				aligned = aligned[off:]
 			}
 			c, worst, _ := pcm.Segmental(srcVoice, aligned, rtc.SampleRate, rtc.SampleRate/2)
-			js := lkrtc.TrackStats(recv)[run.sendID]
+			js := rtcroom.TrackStats(recv)[run.sendID]
 			fmt.Printf("voice    correlation %.3f (worst second %.3f); lost %d of %d (FEC %d, PLC %d), late %d, jitter delay %v\n",
 				c, worst, js.Lost, js.Received+js.Lost, js.FEC, js.PLC, js.Late, js.Target.Round(time.Millisecond))
 		}
@@ -466,7 +466,7 @@ func (r *videoRun) setSizes(w, h int) {
 }
 
 // frame is the receiver's hook: every frame shown.
-func (r *videoRun) frame(t rtc.VideoTrack, f video.Frame, info lkrtc.VideoFrameInfo) {
+func (r *videoRun) frame(t rtc.VideoTrack, f video.Frame, info rtcroom.VideoFrameInfo) {
 	now := time.Now()
 	n, ok := video.ReadCode(f)
 	row := frameRow{who: t.Identity(), kind: t.Kind(), n: n, read: ok, w: f.W, h: f.H, received: info.Received, shown: now,
@@ -520,8 +520,8 @@ func (r *videoRun) report(room rtc.Room, dir string, switchW int, switchedAt tim
 			f.Close()
 		}
 	}
-	stats := map[string]lkrtc.VideoTrackStats{}
-	for _, s := range lkrtc.VideoTracks(room) {
+	stats := map[string]rtcroom.VideoTrackStats{}
+	for _, s := range rtcroom.VideoTracks(room) {
 		stats[s.Identity+"/"+s.Kind.String()] = s
 	}
 	by := map[string][]frameRow{}

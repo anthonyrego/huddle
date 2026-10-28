@@ -1,4 +1,4 @@
-package lkrtc
+package room
 
 // Sending video: each layer of a source is its own lksdk track, published
 // together as one simulcast track (the SFU forwards each receiver the

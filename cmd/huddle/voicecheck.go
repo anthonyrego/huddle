@@ -31,7 +31,7 @@ import (
 	"github.com/anthonyrego/huddle/internal/pcm"
 	"github.com/anthonyrego/huddle/internal/rtc"
 	"github.com/anthonyrego/huddle/internal/rtc/fileio"
-	"github.com/anthonyrego/huddle/internal/rtc/lkrtc"
+	rtcroom "github.com/anthonyrego/huddle/internal/rtc/room"
 )
 
 func init() {
@@ -172,7 +172,7 @@ func loop(ctx context.Context, server, room string, src []float32, sim simFlags)
 	if err := hear.Play(spk); err != nil {
 		return res, err
 	}
-	send, err := (&lkrtc.Connector{}).Connect(ctx, rtc.Join{URL: sj.LiveKitURL, Token: sj.Token, Identity: sj.Identity}, rtc.Events{})
+	send, err := (&rtcroom.Connector{}).Connect(ctx, rtc.Join{URL: sj.LiveKitURL, Token: sj.Token, Identity: sj.Identity}, rtc.Events{})
 	if err != nil {
 		return res, err
 	}
@@ -190,7 +190,7 @@ func loop(ctx context.Context, server, room string, src []float32, sim simFlags)
 	}
 	time.Sleep(time.Second) // the tail
 	res.heard, res.micStart, res.spkStart = spk.Samples(), mic.Start(), spk.Start()
-	for _, s := range lkrtc.TrackStats(hear) {
+	for _, s := range rtcroom.TrackStats(hear) {
 		res.stats = jitterStats{s.Received, s.Late, s.Lost, s.FEC, s.PLC, s.Target}
 	}
 	if res.stats.Received == 0 {

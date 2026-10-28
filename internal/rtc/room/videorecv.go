@@ -1,4 +1,4 @@
-package lkrtc
+package room
 
 // Receiving video: each remote camera or screen is read as raw RTP, put
 // back together into access units, held for lip sync, decoded with the

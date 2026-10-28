@@ -1,10 +1,10 @@
-// Package lkrtc is the rtc interface on LiveKit's Go SDK (lksdk, its root
+// Package room is the rtc interface on LiveKit's Go SDK (lksdk, its root
 // package only: pkg/media pulls libopus through cgo). It publishes the mic
 // as Opus through an lksdk sample track, with the RFC 6464 audio level on
 // every packet (the SFU's speaker detection reads it), subscribes to every
 // remote audio track as raw RTP, gives each its own jitter buffer, and
 // mixes them for the speaker with the playout package.
-package lkrtc
+package room
 
 import (
 	"context"

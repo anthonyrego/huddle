@@ -32,7 +32,7 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/anthonyrego/huddle/internal/fixturemeet"
-	"github.com/anthonyrego/huddle/internal/rtc/lkrtc"
+	rtcroom "github.com/anthonyrego/huddle/internal/rtc/room"
 	"github.com/anthonyrego/huddle/internal/server/httpapi"
 	"github.com/anthonyrego/huddle/internal/server/lktoken"
 )
@@ -60,7 +60,7 @@ func runBot(args []string) error {
 		return err
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
-	lkrtc.QuietSDKLogs()
+	rtcroom.QuietSDKLogs()
 	if *name == "" {
 		*name = "Echo"
 		if kind == "cam" {

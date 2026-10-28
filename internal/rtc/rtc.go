@@ -22,8 +22,11 @@ const (
 
 // Join is what the server's join answer gives the app.
 type Join struct {
-	URL      string // LiveKit's WebSocket URL
-	Token    string // a LiveKit access token for one room and identity
+	// Kind is the media server: wire.MediaLiveKit (or empty) or
+	// wire.MediaBuiltin.
+	Kind     string
+	URL      string // the media server's WebSocket URL
+	Token    string // its token for one room and identity
 	Identity string
 }
 

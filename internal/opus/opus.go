@@ -52,7 +52,8 @@ type Decoder interface {
 	// returns how many samples it wrote.
 	Decode(packet []byte, out []float32) (int, error)
 	// DecodeFEC recovers the frame before next from next's in-band FEC,
-	// FrameSamples into out. Without FEC in next it conceals instead.
+	// len(out) samples (the lost frame's length, a multiple of 2.5 ms).
+	// Without FEC in next it conceals instead.
 	DecodeFEC(next []byte, out []float32) (int, error)
 	// Conceal makes up len(out) samples that were lost.
 	Conceal(out []float32) (int, error)
@@ -101,4 +102,35 @@ func NewDecoderWith(b Backend) (Decoder, error) {
 		return newPionDecoder()
 	}
 	return nil, fmt.Errorf("opus: no backend %q", b)
+}
+
+// PacketSamples is how many samples (at 48 kHz) a packet holds, read from
+// its table-of-contents byte (RFC 6716 §3.1), or 0 when it isn't an Opus
+// packet.
+func PacketSamples(p []byte) int {
+	if len(p) == 0 {
+		return 0
+	}
+	toc := p[0]
+	cfg := int(toc >> 3)
+	var frame int // in units of 2.5 ms
+	switch {
+	case cfg < 12: // SILK: 10, 20, 40, 60 ms
+		frame = []int{4, 8, 16, 24}[cfg%4]
+	case cfg < 16: // hybrid: 10, 20 ms
+		frame = []int{4, 8}[cfg%2]
+	default: // CELT: 2.5, 5, 10, 20 ms
+		frame = []int{1, 2, 4, 8}[cfg%4]
+	}
+	frames := 1
+	switch toc & 3 {
+	case 1, 2:
+		frames = 2
+	case 3:
+		if len(p) < 2 {
+			return 0
+		}
+		frames = int(p[1] & 0x3f)
+	}
+	return frames * frame * SampleRate / 400
 }

@@ -25,6 +25,7 @@ var pure = []string{
 	"internal/jitter",
 	"internal/live",
 	"internal/logx",
+	"internal/netsim",
 	"internal/opus",
 	"internal/pcm",
 	"internal/playout",

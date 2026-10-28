@@ -117,3 +117,33 @@ func envelope(s []float32, n int) []float32 {
 	}
 	return out
 }
+
+// Segmental scores b against a window by window, where the delay between
+// them may change (a jitter buffer adds and removes delay as it goes): each
+// window of a with speech in it (louder than -45 dBFS) is found in b at its
+// own lag, up to maxLag later than where a has it. It returns the mean of
+// the windows' correlations, the worst one, and each window's lag.
+func Segmental(a, b []float32, win, maxLag int) (mean, worst float64, lags []int) {
+	worst = 1
+	var sum float64
+	n := 0
+	for i := 0; i+win <= len(a); i += win {
+		seg := a[i : i+win]
+		if LevelF32(seg) < -45 {
+			continue
+		}
+		end := min(i+win+maxLag, len(b))
+		if i >= end {
+			break
+		}
+		lag, c := BestLag(seg, b[i:end], maxLag)
+		sum += c
+		n++
+		worst = min(worst, c)
+		lags = append(lags, lag)
+	}
+	if n == 0 {
+		return 0, 0, nil
+	}
+	return sum / float64(n), worst, lags
+}

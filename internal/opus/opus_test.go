@@ -146,7 +146,7 @@ func decodeAll(tb testing.TB, dec Decoder, pkts [][]byte, lost []bool, fec bool)
 		switch {
 		case lost != nil && lost[i]:
 			if fec && i+1 < len(pkts) && !lost[i+1] && !IsDTX(len(pkts[i+1])) {
-				n, err = dec.DecodeFEC(pkts[i+1], frame)
+				n, err = dec.DecodeFEC(pkts[i+1], frame[:FrameSamples])
 			} else {
 				n, err = dec.Conceal(frame[:FrameSamples])
 			}
@@ -298,5 +298,22 @@ func TestConcealUnderGC(t *testing.T) {
 		}
 		decodeAll(t, dec, pkts, lost, i%2 == 0)
 		runtime.GC()
+	}
+}
+
+func TestPacketSamples(t *testing.T) {
+	src, _ := speech(t)
+	for _, p := range encodeAll(t, src[:SampleRate], Options{}) {
+		if n := PacketSamples(p); n != FrameSamples {
+			t.Fatalf("packet %x…: %d samples, want %d", p[:min(len(p), 2)], n, FrameSamples)
+		}
+	}
+	for _, c := range []struct {
+		p    []byte
+		want int
+	}{{[]byte{0x00}, 480}, {[]byte{0x0b << 3}, 2880}, {[]byte{31<<3 | 1}, 1920}, {[]byte{16<<3 | 3, 3}, 360}, {nil, 0}} {
+		if got := PacketSamples(c.p); got != c.want {
+			t.Errorf("PacketSamples(%x) = %d, want %d", c.p, got, c.want)
+		}
 	}
 }

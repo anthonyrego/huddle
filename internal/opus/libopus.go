@@ -194,7 +194,7 @@ func (d *libopusDecoder) Decode(packet []byte, out []float32) (int, error) {
 }
 
 func (d *libopusDecoder) DecodeFEC(next []byte, out []float32) (int, error) {
-	return d.decode(next, out, FrameSamples, true)
+	return d.decode(next, out, len(out), true)
 }
 
 func (d *libopusDecoder) Conceal(out []float32) (int, error) {

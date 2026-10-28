@@ -34,7 +34,7 @@ func (d *pionDecoder) Decode(packet []byte, out []float32) (int, error) {
 }
 
 func (d *pionDecoder) DecodeFEC(_ []byte, out []float32) (int, error) {
-	return d.Conceal(out[:FrameSamples])
+	return d.Conceal(out)
 }
 
 func (d *pionDecoder) Conceal(out []float32) (int, error) {

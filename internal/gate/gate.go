@@ -14,6 +14,7 @@
 package gate
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -119,9 +120,12 @@ const pendingMs = 6000
 
 // Gate is the whiteboard's gate. It is not safe for concurrent use.
 type Gate struct {
-	cfg      Config
-	open     map[string]*open // by identity
-	pending  map[string]bool  // identities with speech not yet final
+	cfg     Config
+	open    map[string]*open // by identity
+	pending map[string]bool  // identities with speech not yet final
+	// hearing are identities whose interim transcript has the name: they
+	// are addressing the whiteboard before the final settles it.
+	hearing  map[string]heard
 	speaking bool
 	n        int
 }
@@ -129,7 +133,7 @@ type Gate struct {
 // New returns a gate.
 func New(cfg Config) *Gate {
 	cfg.defaults()
-	return &Gate{cfg: cfg, open: map[string]*open{}, pending: map[string]bool{}}
+	return &Gate{cfg: cfg, open: map[string]*open{}, pending: map[string]bool{}, hearing: map[string]heard{}}
 }
 
 // SetSpeaking says whether the whiteboard is speaking: while it is, its
@@ -139,8 +143,38 @@ func (g *Gate) SetSpeaking(on bool) { g.speaking = on }
 // Speaking reports what SetSpeaking said.
 func (g *Gate) Speaking() bool { return g.speaking }
 
-// Open lists the identities addressing the whiteboard now, oldest first.
-func (g *Gate) Open() []string { return g.order() }
+// heard is a name heard in an interim transcript.
+type heard struct{ startMs, atMs int64 }
+
+// OldestOpen is when the oldest command still being said began,
+// counting ones only heard so far in interim transcripts.
+func (g *Gate) OldestOpen() (startMs int64, ok bool) {
+	for _, o := range g.open {
+		if !ok || o.startMs < startMs {
+			startMs, ok = o.startMs, true
+		}
+	}
+	for _, h := range g.hearing {
+		if !ok || h.startMs < startMs {
+			startMs, ok = h.startMs, true
+		}
+	}
+	return startMs, ok
+}
+
+// Open lists the identities addressing the whiteboard now, oldest first,
+// then the ones heard so far only in interim transcripts.
+func (g *Gate) Open() []string {
+	ids := g.order()
+	var more []string
+	for id := range g.hearing {
+		if g.open[id] == nil {
+			more = append(more, id)
+		}
+	}
+	sort.Strings(more)
+	return append(ids, more...)
+}
 
 // Addressing reports whether identity is addressing the whiteboard now.
 func (g *Gate) Addressing(identity string) bool { return g.open[identity] != nil }
@@ -165,11 +199,16 @@ func (g *Gate) Segment(s Segment) []Out {
 		}
 		// Say "listening" as soon as the name is heard, before the final.
 		if _, ok := Wake(s.Text, g.cfg.Names); ok && !g.speaking {
-			return []Out{{Kind: Listening, Identity: s.Identity, Speaker: s.Speaker}}
+			_, was := g.hearing[s.Identity]
+			g.hearing[s.Identity] = heard{startMs: s.StartMs, atMs: s.EndMs}
+			if !was {
+				return []Out{{Kind: Listening, Identity: s.Identity, Speaker: s.Speaker}}
+			}
 		}
 		return nil
 	}
 	g.pending[s.Identity] = false
+	delete(g.hearing, s.Identity)
 	text := strings.TrimSpace(s.Text)
 	if o != nil {
 		o.pending = false
@@ -247,6 +286,11 @@ func (g *Gate) Address(identity, speaker string, held bool, atMs int64) []Out {
 // Tick ends the commands whose speakers have stopped.
 func (g *Gate) Tick(nowMs int64) []Out {
 	var out []Out
+	for id, h := range g.hearing {
+		if nowMs > h.atMs+pendingMs {
+			delete(g.hearing, id) // its final never came
+		}
+	}
 	for _, id := range g.order() {
 		o := g.open[id]
 		done := false

@@ -84,6 +84,7 @@ func Parse(path string) (*Script, error) {
 	var pause float64
 	var block []Line // inside @repeat
 	repeat := 0
+	var pre float64 // the pause before a block
 	sc := bufio.NewScanner(f)
 	add := func(l Line) {
 		if repeat > 0 {
@@ -129,13 +130,23 @@ func Parse(path string) (*Script, error) {
 				if repeat, err = strconv.Atoi(f[1]); err != nil || repeat < 1 {
 					return nil, bad("@repeat N")
 				}
+				pre, pause = pause, 0
 			case "@end":
 				if repeat == 0 {
 					return nil, bad("@end without @repeat")
 				}
+				// A pause at the end of the block comes before each round
+				// after the first, and before the line after the block.
+				tail := pause
 				for r := 1; r <= repeat; r++ {
-					for _, l := range block {
+					for i, l := range block {
 						l.Text = strings.ReplaceAll(l.Text, "{n}", strconv.Itoa(r))
+						switch {
+						case i == 0 && r == 1:
+							l.Pause += pre
+						case i == 0:
+							l.Pause += tail
+						}
 						s.Lines = append(s.Lines, l)
 					}
 				}

@@ -131,7 +131,13 @@ type queued struct {
 	cmd     gate.Command
 	auto    bool
 	retried bool // sent once already, on a connection that closed
+	at      time.Time
 }
+
+// holdFor is the longest a finished command waits for one begun before
+// it to finish, so two said at once are served in the order they were
+// begun.
+const holdFor = 4 * time.Second
 
 // New makes an agent; Run runs it.
 func New(cfg Config) *Agent {
@@ -381,6 +387,7 @@ func (a *Agent) stop(c gate.Command) {
 // enqueue adds a command; waiting commands go in the order they were
 // said, auto-mode turns behind every real one.
 func (a *Agent) enqueue(q queued) {
+	q.at = time.Now()
 	a.queue = append(a.queue, q)
 	slices.SortStableFunc(a.queue, func(x, y queued) int {
 		if x.auto != y.auto {
@@ -428,6 +435,9 @@ func (a *Agent) tick(ctx context.Context) {
 	}
 	if len(a.queue) > 0 && a.brain.ready_() {
 		q := a.queue[0]
+		if start, ok := a.gate.OldestOpen(); ok && !q.auto && start < q.cmd.StartMs && time.Since(q.at) < holdFor {
+			return // someone began a command before this one and is still saying it
+		}
 		a.queue = a.queue[1:]
 		a.startTurn(ctx, q)
 	}

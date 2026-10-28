@@ -215,3 +215,43 @@ func TestTwoAtOnceComeOutInOrder(t *testing.T) {
 		t.Fatalf("ids = %s, %s", cmds[0].ID, cmds[1].ID)
 	}
 }
+
+func TestOldestOpen(t *testing.T) {
+	g := New(Config{})
+	if _, ok := g.OldestOpen(); ok {
+		t.Fatal("open with nothing said")
+	}
+	g.Segment(Segment{Identity: "kim", Speaker: "Kim", Text: "Whiteboard, add a con", StartMs: 300, EndMs: 2000, Final: true})
+	g.Segment(Segment{Identity: "sam", Speaker: "Sam", Text: "Whiteboard, add a pro", StartMs: 100, EndMs: 1500, Final: true})
+	if s, ok := g.OldestOpen(); !ok || s != 100 {
+		t.Fatalf("oldest = %d, %v", s, ok)
+	}
+}
+
+func TestInterimNameCountsAsOpen(t *testing.T) {
+	g := New(Config{})
+	outs := g.Segment(Segment{Identity: "kim", Speaker: "Kim", Text: "Whiteboard add a", StartMs: 300, EndMs: 900})
+	if len(outs) != 1 || outs[0].Kind != Listening {
+		t.Fatalf("outs = %+v", outs)
+	}
+	if outs := g.Segment(Segment{Identity: "kim", Speaker: "Kim", Text: "Whiteboard add a con", StartMs: 300, EndMs: 1200}); len(outs) != 0 {
+		t.Fatalf("listening twice: %+v", outs)
+	}
+	if s, ok := g.OldestOpen(); !ok || s != 300 || g.Open()[0] != "kim" {
+		t.Fatalf("oldest = %d, %v; open %v", s, ok, g.Open())
+	}
+	g.Segment(Segment{Identity: "kim", Speaker: "Kim", Text: "Whiteboard, add a con.", StartMs: 300, EndMs: 2000, Final: true})
+	if s, ok := g.OldestOpen(); !ok || s != 300 {
+		t.Fatalf("after the final: %d, %v", s, ok)
+	}
+	g.Tick(3000)
+	if _, ok := g.OldestOpen(); ok {
+		t.Fatal("still open after the command")
+	}
+	// An interim with the name whose final never comes stops counting.
+	g.Segment(Segment{Identity: "dan", Speaker: "Dan", Text: "whiteboard", StartMs: 4000, EndMs: 4500})
+	g.Tick(4500 + pendingMs + 100)
+	if _, ok := g.OldestOpen(); ok {
+		t.Fatal("a lost interim stays open")
+	}
+}

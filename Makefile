@@ -29,7 +29,7 @@ ROOM ?= test
 GO = CGO_ENABLED=0 go
 
 .PHONY: build app run render test test-db vet shaders shaders-check nocgo check \
-	dev-up dev-down livekit server notarize lan-ip live-probe
+	dev-up dev-down livekit server notarize lan-ip live-probe fixtures agent-check
 
 build:
 	$(GO) build -o build/huddle ./cmd/huddle
@@ -110,3 +110,15 @@ lan-ip:
 # (a few cents). ARGS="-only brain" or "-only transcribe".
 live-probe: build
 	@$(KEY) ./build/huddled live-probe $(ARGS)
+
+# Renders the fixture meetings (testdata/meetings/*.txt) with macOS voices
+# into per-speaker Ogg Opus (git ignores the audio).
+fixtures: build
+	./build/huddled fixtures
+
+# Scores the whiteboard on a fixture meeting against the local stack, e.g.
+# make agent-check MEETING=review [ARGS="-voice answers"]
+MEETING ?= review
+agent-check: build
+	@DATABASE_URL="$(DATABASE_URL)" LIVEKIT_URL="$(LIVEKIT_URL)" LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret \
+		$(KEY) ./build/huddled agent-check -meeting testdata/meetings/$(MEETING).txt $(ARGS)

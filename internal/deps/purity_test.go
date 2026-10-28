@@ -20,6 +20,7 @@ var pure = []string{
 	"internal/config",
 	"internal/cue",
 	"internal/draw",
+	"internal/fixturemeet",
 	"internal/gate",
 	"internal/geom",
 	"internal/jitter",

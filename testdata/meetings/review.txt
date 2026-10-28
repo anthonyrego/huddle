@@ -1,0 +1,28 @@
+# A release review: three people, commands, questions and distractors.
+@voice Sam Samantha
+@voice Dan Daniel
+@voice Kim Karen
+Sam: Okay, let's go over how a release goes out today.
+Dan: It starts with a build on the main branch, then the test suite runs, then we deploy.
+Sam [command]: Whiteboard, draw our release process: build, then test, then deploy.
+@pause 3
+Kim: Don't forget code review. That happens between the tests and the deploy.
+@pause 1
+Kim [command]: Whiteboard, add a code review step between test and deploy.
+@pause 3
+Dan [distractor]: I'll put the rollback plan on the whiteboard later.
+Sam: Fine. What worries me is the deploy itself.
+Dan [question]: Whiteboard, which step comes right before deploy?
+@pause 5
+Kim: We also keep talking about monitoring after the deploy.
+@pause 1
+Kim [command]: OK whiteboard, add a monitoring step after deploy, and note that it runs for an hour.
+@pause 3
+Sam [distractor]: Can you share the whiteboard link with the new hire?
+Dan: Sure, I'll send it this afternoon.
+Sam [command]: Whiteboard, put review and deploy in a group called shipping.
+@pause 3
+Dan [question]: How many steps are on the board now, whiteboard?
+@pause 5
+Kim [distractor]: The whiteboard in the office is still full of last year's plan.
+Sam: That's enough for today. Thanks, everyone.

@@ -19,6 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/anthonyrego/huddle/internal/devjoin"
 	"github.com/anthonyrego/huddle/internal/fixturemeet"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
@@ -88,7 +89,7 @@ func runType(args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *wait+10*time.Second)
 	defer cancel()
-	j, err := fixturemeet.Join(ctx, *server, *room, *name)
+	j, err := devjoin.Join(ctx, *server, wire.DevJoin{Room: *room, Name: *name})
 	if err != nil {
 		return err
 	}

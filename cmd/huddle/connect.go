@@ -5,13 +5,10 @@ package main
 // the meeting. Stage 3 replaces the dev join with signing in.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -22,6 +19,7 @@ import (
 
 	"github.com/anthonyrego/huddle/internal/board"
 	"github.com/anthonyrego/huddle/internal/board/layout"
+	"github.com/anthonyrego/huddle/internal/devjoin"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
 
@@ -32,7 +30,7 @@ type conn struct {
 	joined             wire.Joined
 	out                chan []byte // frames to send (commands)
 	// onJoin, when set, gets each join's answer (the voice session joins
-	// LiveKit with its token).
+	// the media server with its token).
 	onJoin func(wire.Joined)
 
 	redo atomic.Bool // rejoin asked: join again without waiting
@@ -46,28 +44,15 @@ func newConn(server, room, name string, mt *meeting) *conn {
 
 // join asks the server to let us in and keeps what it answers.
 func (c *conn) join(ctx context.Context) error {
-	body, _ := json.Marshal(wire.DevJoin{Room: c.room, Name: c.name})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.server+"/dev/join", bytes.NewReader(body))
+	j, err := devjoin.Join(ctx, c.server, wire.DevJoin{Room: c.room, Name: c.name})
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		var e wire.Error
-		json.NewDecoder(res.Body).Decode(&e)
-		return fmt.Errorf("join: %s: %s", res.Status, e.Message)
-	}
-	if err := json.NewDecoder(res.Body).Decode(&c.joined); err != nil {
-		return fmt.Errorf("join: %w", err)
-	}
+	c.joined = j
 	c.redo.Store(false) // a fresh token is what a rejoin asks for
 	c.mt.update(func(s *meetingState) { s.room, s.identity = c.joined.Room, c.joined.Identity })
-	slog.Info("conn: joined", "room", c.joined.Room, "identity", c.joined.Identity, "livekit", c.joined.LiveKitURL)
+	m := devjoin.RTC(j)
+	slog.Info("conn: joined", "room", j.Room, "identity", j.Identity, "media", m.Kind, "mediaURL", m.URL)
 	if c.onJoin != nil {
 		c.onJoin(c.joined)
 	}

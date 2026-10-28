@@ -1,0 +1,9 @@
+# The public pages carriers and Twilio read for SMS registration: the
+# privacy policy and the text-message terms. Published by the Pages
+# workflow, run by hand (.github/workflows/pages.yml).
+title: Huddle
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default

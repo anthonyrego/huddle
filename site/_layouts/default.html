@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ page.title }} · Huddle</title>
+<style>
+  :root { color-scheme: light dark; --text: #1d1d1f; --muted: #6e6e73; --bg: #fbfbfd; --rule: #d2d2d7; --link: #0066cc; }
+  @media (prefers-color-scheme: dark) { :root { --text: #f5f5f7; --muted: #a1a1a6; --bg: #161617; --rule: #3a3a3c; --link: #4da3ff; } }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Inter", sans-serif; }
+  main { max-width: 42rem; margin: 0 auto; padding: 2.5rem 1rem 4rem; }
+  nav { font-size: 0.9rem; color: var(--muted); margin-bottom: 2rem; }
+  nav a { margin-right: 1rem; }
+  a { color: var(--link); }
+  h1 { font-size: 1.8rem; line-height: 1.2; margin: 0 0 0.25rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; }
+  .date { color: var(--muted); font-size: 0.9rem; }
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 2rem 0; }
+</style>
+</head>
+<body>
+<main>
+<nav><a href="{{ '/' | relative_url }}">Huddle</a><a href="{{ '/privacy' | relative_url }}">Privacy</a><a href="{{ '/sms' | relative_url }}">Text messages</a></nav>
+{{ content }}
+</main>
+</body>
+</html>

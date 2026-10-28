@@ -1,0 +1,45 @@
+# Publishes site/ (the privacy policy and the text-message terms) to GitHub
+# Pages. Run by hand only (Actions → pages → Run workflow), once the
+# placeholders are filled in and Pages is set to deploy from GitHub
+# Actions in the repo's settings.
+name: pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholders filled in
+        run: |
+          if grep -rn '\[\[' site --include='*.md'; then
+            echo "site/ still has [[placeholders]]: fill them in before publishing" >&2
+            exit 1
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./site
+          destination: ./_site
+      - uses: actions/upload-pages-artifact@v3
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

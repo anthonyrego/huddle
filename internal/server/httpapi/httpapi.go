@@ -1,6 +1,6 @@
-// Package httpapi is the server's HTTP surface: health, the dev join and
-// the meeting WebSocket. Stage 3 adds signing in, meetings and invites;
-// until then the server only runs in dev mode.
+// Package httpapi is the server's HTTP surface: health, the dev join, the
+// meeting WebSocket and the media server's signalling. Stage 3 adds signing
+// in, meetings and invites; until then the server only runs in dev mode.
 package httpapi
 
 import (
@@ -8,12 +8,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"unicode"
 
 	"github.com/anthonyrego/huddle/internal/server/lktoken"
+	"github.com/anthonyrego/huddle/internal/server/rtctoken"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
 
@@ -25,10 +27,18 @@ type Rooms interface {
 
 // Server answers the app.
 type Server struct {
-	Rooms  Rooms
-	Minter lktoken.Minter
-	// LiveKitURL is LiveKit's URL as apps reach it (ws://host:7880).
+	Rooms Rooms
+	// Media is the media server the dev join sends people to:
+	// wire.MediaLiveKit (when empty) or wire.MediaBuiltin.
+	Media string
+	// Minter and LiveKitURL are LiveKit's: tokens signed with its API key,
+	// and its URL as apps reach it (ws://host:7880).
+	Minter     lktoken.Minter
 	LiveKitURL string
+	// RTCMinter signs tokens for huddled's own SFU (builtin), whose
+	// signalling RTC serves at GET /rtc when set.
+	RTCMinter rtctoken.Minter
+	RTC       http.Handler
 	// WS serves the meeting WebSocket.
 	WS http.Handler
 	// Dev allows /dev/join: anyone who can reach the server joins any room
@@ -47,6 +57,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.WS != nil {
 		mux.Handle("GET /ws", s.WS)
+	}
+	if s.RTC != nil {
+		mux.Handle("GET /rtc", s.RTC)
 	}
 	return mux
 }
@@ -71,29 +84,37 @@ func (s *Server) devJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	identity := slug(name) + "-" + randomHex(2)
-	tok, err := s.Minter.Mint(lktoken.Grant{Room: room, Identity: identity, Name: name})
+	if req.Bot {
+		identity += wire.BotSuffix
+	}
+	j := wire.Joined{Room: room, Identity: identity, WSURL: wsURL(r, "/ws")}
+	var err error
+	switch s.Media {
+	case wire.MediaLiveKit, "":
+		j.Media, j.MediaURL, j.LiveKitURL = wire.MediaLiveKit, s.LiveKitURL, s.LiveKitURL
+		j.Token, err = s.Minter.Mint(lktoken.Grant{Room: room, Identity: identity, Name: name})
+	case wire.MediaBuiltin:
+		j.Media, j.MediaURL = wire.MediaBuiltin, wsURL(r, "/rtc")
+		j.Token, err = s.RTCMinter.Mint(rtctoken.Grant{Room: room, Identity: identity, Name: name})
+	default:
+		err = fmt.Errorf("no media server %q", s.Media)
+	}
 	if err != nil {
-		slog.Error("api: mint", "err", err)
+		slog.Error("api: mint", "media", s.Media, "err", err)
 		httpError(w, http.StatusInternalServerError, "couldn't make a media token")
 		return
 	}
-	slog.Info("api: dev join", "room", room, "identity", identity)
-	writeJSON(w, wire.Joined{
-		Room:       room,
-		Identity:   identity,
-		LiveKitURL: s.LiveKitURL,
-		Token:      tok,
-		WSURL:      wsURL(r),
-	})
+	slog.Info("api: dev join", "room", room, "identity", identity, "media", j.Media)
+	writeJSON(w, j)
 }
 
-// wsURL is the meeting WebSocket on the host the app reached.
-func wsURL(r *http.Request) string {
+// wsURL is a WebSocket at path on the host the app reached.
+func wsURL(r *http.Request, path string) string {
 	scheme := "ws"
 	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 		scheme = "wss"
 	}
-	return scheme + "://" + r.Host + "/ws"
+	return scheme + "://" + r.Host + path
 }
 
 // Slug is the room name a dev join gives a name: dev tools that join

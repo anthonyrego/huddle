@@ -48,6 +48,8 @@ type videoTrack struct {
 	aus    chan au
 	done   chan struct{}
 
+	// The size asked for and the one sent to the SFU: -1 before any, so a
+	// track never shown is turned off by its first SetSize(0, 0).
 	sizeMu   sync.Mutex
 	wantW    int
 	wantH    int
@@ -168,7 +170,8 @@ func (r *room) subscribedVideo(track *webrtc.TrackRemote, pub *lksdk.RemoteTrack
 		kind = rtc.Screen
 	}
 	t := &videoTrack{r: r, who: rp.Identity(), kind: kind, pub: pub, rp: rp, track: track, dec: dec,
-		aus: make(chan au, 64), done: make(chan struct{}), waitKey: true, subAt: time.Now()}
+		aus: make(chan au, 64), done: make(chan struct{}), waitKey: true, subAt: time.Now(),
+		wantW: -1, wantH: -1, sentW: -1, sentH: -1}
 	t.st.Identity, t.st.Kind = t.who, kind
 	pub.OnRTCP(t.sr.read)
 	r.mu.Lock()

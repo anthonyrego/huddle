@@ -76,22 +76,22 @@ func (r *room) enter(p *participant) bool {
 			continue
 		}
 		o.send(signal.KindParticipant, p.info())
-		if p.all {
-			for _, pub := range o.pubsLocked() {
+		for _, pub := range o.pubsLocked() {
+			if p.wants(pub) {
 				r.subscribeLocked(p, pub)
 				subscribed++
 			}
 		}
 	}
 	if subscribed > 0 {
-		p.down.negotiate()
+		p.negotiate()
 	}
 	r.mu.Unlock()
 	if old != nil {
 		old.log.Info("sfu: replaced by a new session")
 		old.kick("another session joined as " + p.grant.Identity)
 	}
-	p.log.Info("sfu: joined", "others", len(others), "subscribe", p.all, "agent", p.grant.Agent)
+	p.log.Info("sfu: joined", "others", len(others), "subscribe", p.all, "agent", p.grant.Agent, "local", p.local != nil)
 	return true
 }
 
@@ -122,6 +122,7 @@ func (r *room) removeLocked(p *participant) {
 	for sid, dt := range p.downs {
 		dt.pub.removeDown(dt)
 		delete(p.downs, sid)
+		dt.end()
 	}
 	for _, o := range r.order {
 		o.send(signal.KindLeft, signal.Left{Identity: p.grant.Identity})
@@ -148,20 +149,24 @@ func (r *room) close() []*participant {
 // publish answers a publish: the track gets its SID, the publisher hears
 // published, everyone else hears track, and those who subscribe are sent
 // it (their down connections are offered it once it's on them). Media
-// can't arrive before this: the client offers only after published.
-func (r *room) publish(p *participant, req signal.Publish) error {
+// can't arrive before this: the client offers only after published. src,
+// when set, is an in-process publisher's track, the voice's only source.
+func (r *room) publish(p *participant, req signal.Publish, src *LocalTrack) (*publication, error) {
 	if err := checkPublish(req); err != nil {
-		return err
+		return nil, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if p.gone {
-		return errors.New("not in the room")
+		return nil, errors.New("not in the room")
 	}
 	if p.byCID[req.CID] != nil {
-		return fmt.Errorf("already publishing %q", req.CID)
+		return nil, fmt.Errorf("already publishing %q", req.CID)
 	}
 	pub := newPublication(p, newSID(), req)
+	if src != nil {
+		pub.src = src
+	}
 	p.pubs[pub.sid], p.byCID[pub.cid] = pub, pub
 	p.send(signal.KindPublished, signal.Published{CID: req.CID, SID: pub.sid})
 	for _, o := range r.order {
@@ -169,13 +174,13 @@ func (r *room) publish(p *participant, req signal.Publish) error {
 			continue
 		}
 		o.send(signal.KindTrack, pub.info)
-		if o.all {
+		if o.wants(pub) {
 			r.subscribeLocked(o, pub)
-			o.down.negotiate()
+			o.negotiate()
 		}
 	}
 	p.log.Info("sfu: published", "track", pub.sid, "kind", req.Kind, "source", req.Source, "layers", len(req.Layers))
-	return nil
+	return pub, nil
 }
 
 func checkPublish(req signal.Publish) error {
@@ -218,7 +223,7 @@ func (r *room) unpublish(p *participant, sid string) error {
 }
 
 // unpublishLocked ends pub: everyone else hears untrack, and it comes off
-// their down connections.
+// their down connections (an in-process subscriber's Voice ends).
 func (r *room) unpublishLocked(pub *publication) {
 	p := pub.owner
 	delete(p.pubs, pub.sid)
@@ -231,7 +236,8 @@ func (r *room) unpublishLocked(pub *publication) {
 		o.send(signal.KindUntrack, signal.Untrack{SID: pub.sid})
 		if dt := o.downs[pub.sid]; dt != nil {
 			delete(o.downs, pub.sid)
-			o.down.negotiate()
+			o.negotiate()
+			dt.end()
 		}
 	}
 }
@@ -260,11 +266,16 @@ func (r *room) mute(p *participant, sid string, muted bool) error {
 }
 
 // subscribeLocked has sub sent pub: a down track, fed by pub from now on,
-// that goes on sub's down connection at its next offer.
+// that goes on sub's down connection at its next offer, or, for an
+// in-process subscriber, whose Voice it's handed (after the events
+// already queued for it, so a person arrives before their voice).
 func (r *room) subscribeLocked(sub *participant, pub *publication) {
 	dt := newDownTrack(pub, sub)
 	sub.downs[pub.sid] = dt
 	pub.addDown(dt)
+	if sub.local != nil {
+		sub.local.voice(pub, dt.voice)
+	}
 }
 
 // downsOf is what p should be sent now, by SID.

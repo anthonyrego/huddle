@@ -55,8 +55,8 @@ func TestMediaBuiltin(t *testing.T) {
 	}
 	var s httpapi.Server
 	m.api(&s)
-	if s.Media != wire.MediaBuiltin || s.RTC == nil || len(s.RTCMinter.Secret) != 32 || m.agent != nil {
-		t.Fatalf("the API's media: %+v; the whiteboard's %v", s, m.agent)
+	if b, ok := m.agent.(agent.Builtin); s.Media != wire.MediaBuiltin || s.RTC == nil || len(s.RTCMinter.Secret) != 32 || !ok || b.SFU != m.sfu {
+		t.Fatalf("the API's media: %+v; the whiteboard's %#v", s, m.agent)
 	}
 	m.close()
 	t.Setenv("HUDDLE_RTC_SECRET", "short")

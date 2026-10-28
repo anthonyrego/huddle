@@ -537,3 +537,51 @@ func TestPublishEstimator(t *testing.T) {
 		t.Errorf("%d estimators after publishing", n)
 	}
 }
+
+// A client that never answers the server's offer is sent bye after
+// answerWait: nothing more could ever be sent to it.
+func TestUnansweredOffer(t *testing.T) {
+	ts := newTestSFU(t, func(s *Server) { s.answerWait = 300 * time.Millisecond })
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, ts.url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	frame, _ := signal.Marshal(signal.KindJoin, signal.Join{Protocol: signal.Protocol, Token: ts.token(t, "r", "mute")})
+	if err := conn.Write(ctx, websocket.MessageText, frame); err != nil {
+		t.Fatal(err)
+	}
+	a := ts.join(t, "r", "a", sfuclient.Options{})
+	publishVoice(t, a, 30)
+	var offered time.Time
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("closed before bye: %v", err)
+		}
+		e, err := decode(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Kind == signal.KindOffer && offered.IsZero() {
+			offered = time.Now()
+		}
+		if e.Kind == signal.KindBye {
+			var b signal.Bye
+			e.Decode(&b)
+			if offered.IsZero() || !strings.Contains(b.Reason, "no answer") {
+				t.Fatalf("bye %q (offered: %v)", b.Reason, !offered.IsZero())
+			}
+			t.Logf("bye %v after the offer: %s", time.Since(offered).Round(time.Millisecond), b.Reason)
+			break
+		}
+	}
+	for {
+		if _, _, err := conn.Read(ctx); err != nil {
+			break // the server's close, answered
+		}
+	}
+	waitFor(t, wait, "the silent client to leave", func() bool { return a.has("left mute") })
+}

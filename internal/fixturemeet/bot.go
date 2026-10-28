@@ -7,9 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/livekit/protocol/livekit"
-	lksdk "github.com/livekit/server-sdk-go/v2"
-
 	"github.com/anthonyrego/huddle/internal/devjoin"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
@@ -19,13 +16,13 @@ type Bot struct {
 	Name string
 	Ogg  string
 
-	room  *lksdk.Room
-	track *lksdk.LocalSampleTrack
-	t     *Track
+	mic Mic
+	t   *Track
 }
 
 // Connect joins the bot to the room through the dev server, as a bot (the
-// echo bot leaves it alone), and publishes its (still quiet) track.
+// echo bot leaves it alone), and publishes its (still quiet) microphone
+// on the media server the join names.
 func (b *Bot) Connect(ctx context.Context, server, room string) error {
 	t, err := ReadTrack(b.Ogg)
 	if err != nil {
@@ -36,31 +33,21 @@ func (b *Bot) Connect(ctx context.Context, server, room string) error {
 	if err != nil {
 		return err
 	}
-	m := devjoin.RTC(j)
-	if m.Kind != wire.MediaLiveKit {
-		return fmt.Errorf("%s: the server's media is %s, and fixture bots join only LiveKit so far", b.Name, m.Kind)
+	if b.mic, err = JoinMic(ctx, devjoin.RTC(j), "microphone"); err != nil {
+		return fmt.Errorf("%s: %w", b.Name, err)
 	}
-	b.room, err = lksdk.ConnectToRoomWithToken(m.URL, m.Token, lksdk.NewRoomCallback(), lksdk.WithAutoSubscribe(false))
-	if err != nil {
-		return fmt.Errorf("%s: LiveKit: %w", b.Name, err)
-	}
-	b.track, err = lksdk.NewLocalSampleTrack(OpusCap)
-	if err != nil {
-		return err
-	}
-	_, err = b.room.LocalParticipant.PublishTrack(b.track, &lksdk.TrackPublicationOptions{Name: "microphone", Source: livekit.TrackSource_MICROPHONE})
-	return err
+	return nil
 }
 
 // Play sends the track in real time from t0 until it ends or ctx does.
 func (b *Bot) Play(ctx context.Context, t0 time.Time) error {
-	return b.t.Play(ctx, b.track, t0, false)
+	return b.t.Play(ctx, b.mic, t0, false)
 }
 
 // Close leaves the room.
 func (b *Bot) Close() {
-	if b.room != nil {
-		b.room.Disconnect()
+	if b.mic != nil {
+		b.mic.Close()
 	}
 }
 

@@ -19,7 +19,9 @@ import (
 
 // participant is one session on /rtc: a person in a room, with the
 // connection they publish on (up) and the one they're sent everyone else's
-// tracks on (down).
+// tracks on (down). Or it's in-process (local set; local.go): no socket,
+// no connections, what the room sends it turned into its events, and what
+// it's sent handed over as Voices.
 type participant struct {
 	s      *Server
 	grant  rtctoken.Grant
@@ -29,8 +31,9 @@ type participant struct {
 	cancel context.CancelFunc
 	sendq  chan []byte // nil frame: close after what's queued
 	done   chan struct{}
+	local  *localPeer // an in-process participant's; nil for a session on /rtc
 
-	up, down *transport
+	up, down *transport // nil when local
 
 	endOnce    sync.Once
 	finishOnce sync.Once
@@ -70,9 +73,32 @@ func (p *participant) info() signal.Participant {
 	return signal.Participant{Identity: p.grant.Identity, Name: p.grant.Name, Agent: p.grant.Agent}
 }
 
+// wants says whether p is sent pub: everything, for a session that
+// subscribes; a person's voice, for an in-process participant (never a
+// video, nor another agent's voice).
+func (p *participant) wants(pub *publication) bool {
+	if p.local != nil {
+		return pub.kind == webrtc.RTPCodecTypeAudio && !pub.owner.grant.Agent
+	}
+	return p.all
+}
+
+// negotiate offers p's down connection again soon (an in-process
+// participant has none).
+func (p *participant) negotiate() {
+	if p.down != nil {
+		p.down.negotiate()
+	}
+}
+
 // send queues a message for the client. A client whose queue is full is
 // dropped: it can't keep up, and a message skipped would leave it wrong.
+// An in-process participant takes the message as it is, at once.
 func (p *participant) send(kind string, body any) {
+	if p.local != nil {
+		p.local.message(body)
+		return
+	}
 	frame, err := signal.Marshal(kind, body)
 	if err != nil {
 		p.log.Error("sfu: a message", "kind", kind, "err", err)
@@ -96,8 +122,15 @@ func (p *participant) push(frame []byte) {
 }
 
 // kick ends the session with bye: the client hears why, then the socket
-// closes.
+// closes. An in-process participant just leaves.
 func (p *participant) kick(reason string) {
+	if p.local != nil {
+		p.endOnce.Do(func() {
+			p.log.Info("sfu: an in-process participant ended", "reason", reason)
+			go p.finish()
+		})
+		return
+	}
 	p.endOnce.Do(func() {
 		p.send(signal.KindBye, signal.Bye{Reason: reason})
 		p.push(nil)
@@ -220,7 +253,8 @@ func (p *participant) handle(e signal.Envelope) error {
 		if err := e.Decode(&req); err != nil {
 			return err
 		}
-		return r.publish(p, req)
+		_, err := r.publish(p, req, nil)
+		return err
 	case signal.KindUnpublish:
 		var req signal.Unpublish
 		if err := e.Decode(&req); err != nil {
@@ -256,15 +290,20 @@ func (p *participant) onTrack(tr *webrtc.TrackRemote, rcv *webrtc.RTPReceiver) {
 	pub.receive(tr, rcv)
 }
 
-// finish is the end of the session: out of the room, connections closed.
+// finish is the end of the session: out of the room, connections closed
+// (an in-process participant's events stopped).
 func (p *participant) finish() {
 	p.finishOnce.Do(func() {
 		p.cancel()
 		if r := p.rm.Load(); r != nil {
 			r.leave(p)
 		}
-		p.up.close()
-		p.down.close()
+		if p.local != nil {
+			p.local.events.stop()
+		} else {
+			p.up.close()
+			p.down.close()
+		}
 		close(p.done)
 	})
 }

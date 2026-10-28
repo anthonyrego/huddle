@@ -52,16 +52,20 @@ func TestAudioOnly(t *testing.T) {
 	if _, err := lk.LocalParticipant.PublishTrack(cam, &lksdk.TrackPublicationOptions{Name: "camera", Source: livekit.TrackSource_CAMERA}); err != nil {
 		t.Fatal(err)
 	}
+	var someoneWrites writes
 	go func() {
-		for ctx.Err() == nil {
-			voice.WriteSample(media.Sample{Data: []byte{0xf8, 0xff, 0xfe}, Duration: 20 * time.Millisecond}, nil)
+		start := time.Now()
+		for n := uint32(0); ctx.Err() == nil; n++ {
+			time.Sleep(time.Until(start.Add(time.Duration(n) * 20 * time.Millisecond)))
+			someoneWrites.wrote(n)
+			voice.WriteSample(media.Sample{Data: stamped(n), Duration: 20 * time.Millisecond}, nil)
 			cam.WriteSample(media.Sample{Data: []byte{0, 0, 0, 1, 0x41, 0x9a, 0x20}, Duration: 33 * time.Millisecond}, nil)
-			time.Sleep(20 * time.Millisecond)
 		}
 	}()
 
 	var mu sync.Mutex
 	var arrived, handed []string
+	var someoneTransit durations
 	mr, err := LiveKit{Minter: m, URL: url}.Join(ctx, room, Hearing{
 		Arrived: func(identity, name string) { mu.Lock(); arrived = append(arrived, identity+" "+name); mu.Unlock() },
 		Left:    func(string) {},
@@ -69,6 +73,7 @@ func TestAudioOnly(t *testing.T) {
 			mu.Lock()
 			handed = append(handed, identity+" "+track.Codec().MimeType)
 			mu.Unlock()
+			go transit(track, &someoneWrites, someoneTransit.add)
 		},
 	})
 	if err != nil {
@@ -121,4 +126,7 @@ func TestAudioOnly(t *testing.T) {
 		t.Fatalf("arrived %q, %d people", arrived, mr.People())
 	}
 	t.Logf("voice subscribed and handed over, camera not; arrived %q", arrived)
+	ds := someoneTransit.get()
+	med, p95 := median(ds)
+	t.Logf("someone → the whiteboard: %d frames, transit median %v, p95 %v", len(ds), med.Round(10*time.Microsecond), p95.Round(10*time.Microsecond))
 }

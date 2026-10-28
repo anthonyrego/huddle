@@ -77,9 +77,8 @@ func newMedia(addr string) (*media, error) {
 		}
 		m.rtc, m.sfu = srv, srv
 		m.close = func() { srv.Close() }
-		// The whiteboard joins huddled's SFU in-process in the media
-		// server's step 2 (m.agent); until then a builtin server runs
-		// without it.
+		// The whiteboard joins huddled's SFU in-process.
+		m.agent = agent.Builtin{SFU: srv}
 		return m, nil
 	default:
 		return nil, fmt.Errorf("HUDDLE_MEDIA is %q: livekit or builtin", m.kind)

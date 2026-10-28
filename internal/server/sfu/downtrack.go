@@ -2,6 +2,7 @@ package sfu
 
 import (
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +12,8 @@ import (
 	"github.com/pion/rtp"
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
+
+	"github.com/anthonyrego/huddle/internal/rtc/codecs"
 )
 
 // newRunGap is the least a stream that starts again (a new SSRC under the
@@ -36,10 +39,15 @@ const newRunGap = 20 * time.Millisecond
 // (report): pion's would map RTP time to when the SFU forwarded each
 // packet, which would put a person's voice and video out of step by
 // however differently they were delayed on the way.
+//
+// An in-process subscriber's down track (local.go) is never on a
+// connection: each packet, numbered and timed the same way, goes to its
+// Voice instead, and it sends no reports.
 type downTrack struct {
 	pub   *publication
 	sub   *participant
 	clock uint32
+	voice *Voice // an in-process subscriber's, in place of a connection
 
 	mu      sync.Mutex
 	bound   bool
@@ -65,7 +73,20 @@ type downTrack struct {
 }
 
 func newDownTrack(pub *publication, sub *participant) *downTrack {
-	return &downTrack{pub: pub, sub: sub, clock: pub.codec.ClockRate}
+	d := &downTrack{pub: pub, sub: sub, clock: pub.codec.ClockRate}
+	if sub.local != nil {
+		d.voice = newVoice(pub.codec)
+		d.ssrc, d.pt = rand.Uint32(), codecs.OpusPT
+	}
+	return d
+}
+
+// end is the track gone from its subscriber (unpublished, or either end
+// left): an in-process subscriber's Voice ends.
+func (d *downTrack) end() {
+	if d.voice != nil {
+		d.voice.close()
+	}
 }
 
 // ID, RID, StreamID and Kind are webrtc.TrackLocal's.
@@ -98,7 +119,7 @@ func (d *downTrack) Bind(ctx webrtc.TrackLocalContext) (webrtc.RTPCodecParameter
 	d.bound, d.ssrc, d.pt, d.levelID, d.w = true, uint32(ctx.SSRC()), uint8(codec.PayloadType), levelID, ctx.WriteStream()
 	d.mu.Unlock()
 	go d.readRTCP(ctx.RTCPReader())
-	d.sub.log.Info("sfu: subscribed", "track", d.pub.sid, "from", d.pub.owner.grant.Identity, "kind", d.pub.kind.String())
+	d.sub.log.Debug("sfu: subscribed", "track", d.pub.sid, "from", d.pub.owner.grant.Identity, "kind", d.pub.kind.String())
 	return codec, nil
 }
 
@@ -125,6 +146,10 @@ func (d *downTrack) readRTCP(r interceptor.RTCPReader) {
 // write sends one packet of the publisher's to the subscriber. level is
 // the packet's RFC 6464 byte, when hasLevel.
 func (d *downTrack) write(p *rtp.Packet, level byte, hasLevel bool, now time.Time) {
+	if d.voice != nil {
+		d.writeLocal(p, now)
+		return
+	}
 	if !d.sub.down.connected() {
 		return
 	}
@@ -156,6 +181,27 @@ func (d *downTrack) write(p *rtp.Packet, level byte, hasLevel bool, now time.Tim
 	if first {
 		d.report(now)
 	}
+}
+
+// writeLocal hands one packet to an in-process subscriber's Voice: a copy
+// of its own, numbered and timed as on a connection (munge), without
+// header extensions. It never blocks: a Voice whose reader is behind
+// drops its oldest.
+func (d *downTrack) writeLocal(p *rtp.Packet, now time.Time) {
+	d.mu.Lock()
+	seq, ts, ok := d.munge(p, now)
+	if ok {
+		d.packets++
+		d.octets += uint32(len(p.Payload))
+	}
+	d.mu.Unlock()
+	if !ok {
+		return
+	}
+	d.voice.put(&rtp.Packet{
+		Header:  rtp.Header{Version: 2, Marker: p.Marker, PayloadType: d.pt, SequenceNumber: seq, Timestamp: ts, SSRC: d.ssrc},
+		Payload: slices.Clone(p.Payload),
+	})
 }
 
 // munge gives a packet its place in what the subscriber is sent; d.mu is

@@ -36,9 +36,8 @@ type transport interface {
 	// timestamp base). onRTCP hears what receivers say about each layer
 	// (a PLI or FIR asks that layer's encoder for a keyframe).
 	publishVideo(kind rtc.VideoKind, layers []rtc.Layer, onRTCP func(layer int, p rtcp.Packet)) (videoOut, error)
-	// estimator is the congestion control on the connection we publish on
-	// (the one the transport made from dialConfig.send); nil until that
-	// connection exists.
+	// estimator is the congestion control on the connection we publish
+	// on; nil until that connection exists.
 	estimator() *icept.Estimator
 	// leave hangs up.
 	leave()

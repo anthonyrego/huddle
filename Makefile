@@ -29,7 +29,7 @@ ROOM ?= test
 GO = CGO_ENABLED=0 go
 
 .PHONY: build app run render test test-db vet shaders shaders-check nocgo check \
-	dev-up dev-down livekit server notarize lan-ip live-probe fixtures agent-check
+	dev-up dev-down livekit server notarize lan-ip live-probe fixtures agent-check meet
 
 build:
 	$(GO) build -o build/huddle ./cmd/huddle
@@ -122,3 +122,8 @@ MEETING ?= review
 agent-check: build
 	@DATABASE_URL="$(DATABASE_URL)" LIVEKIT_URL="$(LIVEKIT_URL)" LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret \
 		$(KEY) ./build/huddled agent-check -meeting testdata/meetings/$(MEETING).txt $(ARGS)
+
+# Dev: fixture bots join ROOM on SERVER and play MEETING (make fixtures
+# first), for watching the whiteboard in the app.
+meet: build
+	./build/huddled meet -server "$(SERVER)" -room "$(ROOM)" -meeting testdata/meetings/$(MEETING).txt

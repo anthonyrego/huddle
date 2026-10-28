@@ -337,9 +337,11 @@ func TestLocalSlowReader(t *testing.T) {
 	}
 	defer wb.Leave()
 	sp, _ := publishVoice(t, ann, 30)
+	hearsAll(t, []*testClient{bea}, []*speaker{sp})
+	readyAt := int(sp.sent.Load())
 	time.Sleep(1500 * time.Millisecond)
 	sent := allHeard(t, []*testClient{bea}, []*speaker{sp})
-	checkRun(t, "bea hearing ann beside a voice nobody reads", bea.framesFrom("ann"), 0, sent["ann"]-1)
+	checkRun(t, "bea hearing ann beside a voice nobody reads", bea.framesFrom("ann"), readyAt, sent["ann"]-1)
 	mu.Lock()
 	defer mu.Unlock()
 	if len(handed) != 1 {

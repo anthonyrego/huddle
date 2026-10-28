@@ -70,9 +70,9 @@ func (s *Server) LocalJoin(g rtctoken.Grant, ev LocalEvents) (*Local, error) {
 	}
 	p := &participant{
 		s: s, grant: g, cancel: func() {},
-		log:   s.log.With("room", g.Room, "identity", g.Identity),
-		done:  make(chan struct{}),
-		pubs:  map[string]*publication{}, byCID: map[string]*publication{}, downs: map[string]*downTrack{},
+		log:  s.log.With("room", g.Room, "identity", g.Identity),
+		done: make(chan struct{}),
+		pubs: map[string]*publication{}, byCID: map[string]*publication{}, downs: map[string]*downTrack{},
 		gone:  true,
 		local: &localPeer{ev: ev, events: newEventQueue(), people: map[string]bool{}},
 	}

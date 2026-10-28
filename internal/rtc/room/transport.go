@@ -1,8 +1,7 @@
 package room
 
 // The transport is the media server under a room: LiveKit through its Go
-// SDK (lk.go), and from the media server's step 2 huddle's own SFU
-// (sfuclient). It carries everything the room says to the server or hears
+// SDK (lk.go), or huddle's own SFU through sfuclient (sfu.go). It carries everything the room says to the server or hears
 // from it: who's there, the tracks it's sent and what it asks of them, what
 // it publishes, and the congestion control on the connection it publishes
 // on. Opus, jitter buffers, the mix, the allocator, the assembler, decoding
@@ -10,7 +9,6 @@ package room
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/pion/interceptor"
@@ -81,10 +79,13 @@ type transportEvents struct {
 
 // remoteTrack is a track we're sent.
 type remoteTrack struct {
-	sid    string // the server's name for it
-	who    string // its publisher's identity
-	name   string // its publisher's name for it
-	kind   webrtc.RTPCodecType
+	sid  string // the server's name for it
+	who  string // its publisher's identity
+	name string // its publisher's name for it
+	kind webrtc.RTPCodecType
+	// mime is its codec's MIME type, as negotiated (a TrackRemote's own
+	// Codec is empty until its first packet is read).
+	mime   string
 	source source
 	track  *webrtc.TrackRemote
 	// levelExt is the RFC 6464 audio level's header extension ID on its
@@ -139,7 +140,7 @@ func dialer(kind string) (dialFunc, error) {
 	case "", wire.MediaLiveKit:
 		return dialLK, nil
 	case wire.MediaBuiltin:
-		return nil, errors.New("builtin media isn't in this build yet")
+		return dialSFU, nil
 	}
 	return nil, fmt.Errorf("unknown media server %q", kind)
 }

@@ -4,8 +4,8 @@
 // into its own jitter buffer, and mixes them for the speaker with the
 // playout package; it sends and receives video too (video.go,
 // videorecv.go). What it says to the server goes through a transport
-// (transport.go): LiveKit's Go SDK (lk.go), and from the media server's
-// step 2 huddle's own SFU.
+// (transport.go): LiveKit's Go SDK (lk.go), or huddle's own SFU through
+// sfuclient (sfu.go).
 package room
 
 import (
@@ -204,8 +204,8 @@ func (r *room) subscribed(rt remoteTrack) func(rtcp.Packet) {
 	if rt.kind != webrtc.RTPCodecTypeAudio {
 		return nil
 	}
-	if !strings.EqualFold(rt.track.Codec().MimeType, webrtc.MimeTypeOpus) {
-		slog.Warn("voice: not Opus, not played", "identity", rt.who, "codec", rt.track.Codec().MimeType)
+	if !strings.EqualFold(rt.mime, webrtc.MimeTypeOpus) {
+		slog.Warn("voice: not Opus, not played", "identity", rt.who, "codec", rt.mime)
 		return nil
 	}
 	dec, err := opus.NewDecoder()
@@ -254,8 +254,8 @@ func (r *room) unsubscribed(sid string) {
 	if t == nil {
 		return
 	}
+	r.logTrack(t) // while the mix still has its numbers
 	r.mix.Remove(t.sid)
-	r.logTrack(t)
 	t.buf.Close()
 }
 

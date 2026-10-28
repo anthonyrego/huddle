@@ -131,7 +131,8 @@ func lkSource(s livekit.TrackSource) source {
 }
 
 func (t *lkTransport) subscribed(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant, ev transportEvents) {
-	rt := remoteTrack{sid: pub.SID(), who: rp.Identity(), name: pub.Name(), kind: track.Kind(), source: lkSource(pub.Source()), track: track}
+	rt := remoteTrack{sid: pub.SID(), who: rp.Identity(), name: pub.Name(), kind: track.Kind(), mime: track.Codec().MimeType,
+		source: lkSource(pub.Source()), track: track}
 	if rt.kind == webrtc.RTPCodecTypeVideo {
 		rt.video = &lkRemoteVideo{pub: pub, rp: rp, track: track}
 	}

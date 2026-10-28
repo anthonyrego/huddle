@@ -110,3 +110,20 @@ func TestVoiceRetries(t *testing.T) {
 		return s.status == callRetry || s.status == callJoining
 	})
 }
+
+// Voice retries the same way when huddled's own media server can't be
+// reached, and says so in the same words.
+func TestVoiceRetriesBuiltin(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := newCall(true, "", nil)
+	go c.run(ctx)
+	addr := closedAddr(t)
+	c.onJoin(wire.Joined{Room: "r", Identity: "ann-1", Media: wire.MediaBuiltin, MediaURL: "ws://" + addr + "/rtc", Token: "x"})
+	waitFor(t, "a retry", 10*time.Second, func() bool { return c.snapshot().status == callRetry })
+	st := c.snapshot()
+	want := "join the voice room: could not reach the media server: dial tcp " + addr + ": connect: connection refused"
+	if st.retryIn < 1 || st.canMute || st.lostErr != want {
+		t.Fatalf("retrying: in %d, canMute %v, err %q", st.retryIn, st.canMute, st.lostErr)
+	}
+}

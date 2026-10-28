@@ -312,7 +312,9 @@ func TestBotsOnBuiltin(t *testing.T) {
 // writerFunc is a function as a FrameWriter.
 type writerFunc func(frame []byte, ts uint32, level *uint8) error
 
-func (f writerFunc) WriteFrame(frame []byte, ts uint32, level *uint8) error { return f(frame, ts, level) }
+func (f writerFunc) WriteFrame(frame []byte, ts uint32, level *uint8) error {
+	return f(frame, ts, level)
+}
 
 // TestEchoLive checks a running builtin server's echo bot (make bot
 // ARGS=echo) from outside: a person talks for 3 s, and a listener hears the

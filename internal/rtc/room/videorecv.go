@@ -155,8 +155,8 @@ func (t *videoTrack) sendSize() {
 // subscribedVideo starts showing a video track we're sent, and returns
 // what reads its RTCP.
 func (r *room) subscribedVideo(rt remoteTrack) func(rtcp.Packet) {
-	if !strings.EqualFold(rt.track.Codec().MimeType, webrtc.MimeTypeH264) {
-		slog.Warn("video: not H.264, not shown", "identity", rt.who, "codec", rt.track.Codec().MimeType)
+	if !strings.EqualFold(rt.mime, webrtc.MimeTypeH264) {
+		slog.Warn("video: not H.264, not shown", "identity", rt.who, "codec", rt.mime)
 		return nil
 	}
 	if r.cfg.NewDecoder == nil {

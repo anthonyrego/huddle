@@ -76,9 +76,9 @@ func TestLimit(t *testing.T) {
 func TestStretchOnlyAtSilence(t *testing.T) {
 	out := make([]float32, FrameSamples)
 	for _, c := range []struct {
-		name          string
-		amp           float64
-		level, target time.Duration
+		name            string
+		amp             float64
+		level, target   time.Duration
 		dropped, silent int // in 40 frames: at most one in five, once the smoothed offset is past 25 ms
 	}{
 		{"on target", 0, 40 * time.Millisecond, 40 * time.Millisecond, 0, 0},

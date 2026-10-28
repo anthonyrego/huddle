@@ -150,3 +150,113 @@ func matchSpeakersToMic() (restore func(), err error) {
 		}
 	}, nil
 }
+
+const (
+	caDeviceNameCF       = 'l'<<24 | 'n'<<16 | 'a'<<8 | 'm' // kAudioObjectPropertyName
+	caRunningSomewhere   = 'g'<<24 | 'o'<<16 | 'n'<<8 | 'e' // kAudioDevicePropertyDeviceIsRunningSomewhere
+	cfStringEncodingUTF8 = 0x08000100
+)
+
+var cf struct {
+	once    sync.Once
+	err     error
+	getCStr func(s uintptr, buf *byte, size int, enc uint32) bool
+	release func(uintptr)
+}
+
+func loadCF() error {
+	cf.once.Do(func() {
+		lib, err := purego.Dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", purego.RTLD_NOW|purego.RTLD_GLOBAL)
+		if err != nil {
+			cf.err = err
+			return
+		}
+		purego.RegisterLibFunc(&cf.getCStr, lib, "CFStringGetCString")
+		purego.RegisterLibFunc(&cf.release, lib, "CFRelease")
+	})
+	return cf.err
+}
+
+// deviceName is a device's name, or "" when it can't be read.
+func deviceName(dev uint32) string {
+	if loadCF() != nil {
+		return ""
+	}
+	addr := caAddress{caDeviceNameCF, caScopeGlobal, 0}
+	var s uintptr
+	size := uint32(unsafe.Sizeof(s))
+	if st := ca.get(dev, &addr, 0, nil, &size, unsafe.Pointer(&s)); st != 0 || s == 0 {
+		return ""
+	}
+	defer cf.release(s)
+	buf := make([]byte, 256)
+	if !cf.getCStr(s, &buf[0], len(buf), cfStringEncodingUTF8) {
+		return ""
+	}
+	return cString(&buf[0])
+}
+
+// runningSomewhere reports whether any process has the device running
+// (for the input: whether some app has the mic open now).
+func runningSomewhere(dev uint32) (bool, error) {
+	addr := caAddress{caRunningSomewhere, caScopeGlobal, 0}
+	var v uint32
+	size := uint32(unsafe.Sizeof(v))
+	if st := ca.get(dev, &addr, 0, nil, &size, unsafe.Pointer(&v)); st != 0 {
+		return false, fmt.Errorf("device %d running (OSStatus %d)", dev, st)
+	}
+	return v != 0, nil
+}
+
+// DefaultDevice is a default device as CoreAudio has it, read without
+// opening it.
+type DefaultDevice struct {
+	Name    string
+	Rate    float64
+	Rates   []float64 // the rates it can run at
+	Running bool      // some process has it running now
+}
+
+// Defaults reads the default input and output devices without opening
+// them: what voice processing would run on.
+func Defaults() (in, out DefaultDevice, err error) {
+	if err := loadCoreAudio(); err != nil {
+		return in, out, err
+	}
+	read := func(input bool) (DefaultDevice, error) {
+		var d DefaultDevice
+		id, err := defaultDevice(input)
+		if err != nil {
+			return d, err
+		}
+		d.Name = deviceName(id)
+		if d.Rate, err = nominalRate(id); err != nil {
+			return d, err
+		}
+		if rs, err := availableRates(id); err == nil {
+			for _, r := range rs {
+				d.Rates = append(d.Rates, r.Min)
+			}
+		}
+		d.Running, _ = runningSomewhere(id)
+		return d, nil
+	}
+	if in, err = read(true); err != nil {
+		return in, out, err
+	}
+	out, err = read(false)
+	return in, out, err
+}
+
+// InputRunning reports whether any process has the default input (the
+// mic) running now.
+func InputRunning() (bool, error) {
+	if err := loadCoreAudio(); err != nil {
+		return false, err
+	}
+	id, err := defaultDevice(true)
+	if err != nil {
+		return false, err
+	}
+	return runningSomewhere(id)
+}

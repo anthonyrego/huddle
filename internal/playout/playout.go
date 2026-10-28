@@ -86,7 +86,7 @@ type track struct {
 	// 200 ms: the level jumps with every packet that arrives, and acting
 	// on each jump would stretch back and forth.
 	off time.Duration
-	st          TrackStats
+	st  TrackStats
 }
 
 // New returns an empty mixer.

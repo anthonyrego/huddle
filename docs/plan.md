@@ -12,7 +12,7 @@ together.
 | Area | Decision |
 |---|---|
 | Platform | macOS only for now (Apple Silicon, macOS 14+). Windows and Linux are deferred; the core stays portable |
-| Media | Voice, then camera and screen share. Pure Go clients over a self-hosted LiveKit SFU, no cgo |
+| Media | Voice, then camera and screen share. Pure Go clients over our own SFU inside the server (on pion, adapted from LiveKit's), no cgo. Stages 1 and 2 ran on a self-hosted LiveKit |
 | AI | Gemini realtime. Per meeting, the whiteboard's voice is `answers` (default: silent while drawing, speaks only when asked a question), `muted` or `narrate` |
 | Board | Only the AI writes. People direct it by voice, a typed command or a push-to-address key |
 | Replay | Board versions, transcript and audio |
@@ -112,6 +112,57 @@ network and decoder.
   drawing during a share, and a 1 Mbps link that drops the video a layer
   while the voice stays clean.
 
+## The media server (between stages 2 and 3)
+
+LiveKit runs as a service of its own, and its SDK stands between us and
+fixes: it pads a track nobody has sent on (new subscribers' jitter buffers
+sat at 300 ms), doesn't expose Dynacast (every layer is sent, watched or
+not), picks the layer below a tile slightly larger than it, and takes about
+1.1 s to a first video frame. So the SFU moves into `huddled serve`, written
+here on pion and adapted from LiveKit's server and SDK (Apache 2.0: the
+license and NOTICE ship with the code and the app), and our own client
+replaces lksdk behind `rtc.Connector`. LiveKit stays beside it
+(`HUDDLE_MEDIA=livekit|builtin`) until every gate matches its numbers.
+
+- **The shape:**
+  - Media on one UDP port, the HTTP port's number, advertising the LAN
+    address; full ICE; TURN waits for the release stage.
+  - Signalling on its own WebSocket, `/rtc`, in JSON; HMAC tokens from the
+    dev join.
+  - Two connections per person, as LiveKit has: the client offers on the
+    one it publishes on, the server on the one it sends on.
+  - pion's NACK, reports and TWCC on both sides; no RTX (pion's responder
+    never marks a simulcast layer's retransmissions) and no padding.
+  - Sender reports on each down track translated from the publisher's, so
+    lip sync holds.
+  - The smallest layer at least the size asked for, switched at keyframes,
+    a keyframe asked for at once on a new subscription.
+  - The whiteboard joins in-process: the voices come to it as RTP from the
+    SFU, its voice goes straight in.
+- **Step 0:** LiveKit's server source for reference; baselines through
+  LiveKit (voice-check, the `huddle video` set, agent-check, an app run with
+  bot cams); spikes as tests in CI: pion simulcast pion to pion, the
+  forwarder's splice on encoded layers, pion's GCC on the server's side.
+- **Step 1, the seams (parallel):**
+  - lkrtc becomes `internal/rtc/room` over a transport interface.
+  - The signalling types, tokens, the dev join's `Media`, bots on the dev
+    join, and the agent's `Media`.
+  - The SFU's skeleton with audio.
+- **Step 2, voice on our SFU:**
+  - **Gate:** voice-check within LiveKit's numbers, a new subscriber at
+    40 ms from the first second, agent-check unchanged.
+- **Step 3, video:**
+  - **Gate:** Track P's numbers, plus:
+    - a first frame within 300 ms
+    - a 342×192 tile gets 360p
+    - lip sync under a 1 Mbps uplink
+    - no growing lag at 20% loss with jitter
+- **Step 4:** Dynacast (unwatched layers stop), then the downlink's own
+  allocation (deferrable on the LAN).
+- **Step 5:**
+  - builtin becomes the default, and the user's two-Mac gates run on it.
+  - Then LiveKit, lksdk, the protocol module and `lktoken` go.
+
 ## Later stages
 
 1. Accounts and meetings: Verify sign-in, meetings, scheduling, invites, join
@@ -131,6 +182,10 @@ network and decoder.
   transcription model takes 16 kHz PCM, returns text, and runs 10-minute
   sessions without speaker labels (each participant's own track gives those).
 - LiveKit's Go SDK takes already-encoded media; its root package needs no cgo.
+- pion's NACK responder makes RTX by copying the original header and never
+  writes repaired-rid (interceptor v0.1.47), so a pion SFU can't tell which
+  simulcast layer an RTX stream repairs; without RTX it resends on the
+  stream itself.
 - pion's Opus decoder is pure Go and complete; its encoder is CELT-only.
 - The hardened runtime needs the mic and camera entitlements, and every
   loaded library signed by the same team.

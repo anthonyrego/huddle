@@ -10,8 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/livekit/protocol/livekit"
-	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 
@@ -38,8 +36,7 @@ type videoTrack struct {
 	r     *room
 	who   string
 	kind  rtc.VideoKind
-	pub   *lksdk.RemoteTrackPublication
-	rp    *lksdk.RemoteParticipant
+	ctl   remoteVideo
 	track *webrtc.TrackRemote
 	dec   rtc.VideoDecoder
 	sr    srClock
@@ -134,14 +131,14 @@ func (t *videoTrack) sendSize() {
 	t.sizeMu.Unlock()
 	switch {
 	case off:
-		t.pub.SetEnabled(false)
+		t.ctl.setEnabled(false)
 	default:
-		t.pub.SetVideoDimensions(uint32(w), uint32(h))
+		t.ctl.setSize(w, h)
 		if was {
 			// Shown again: the SFU forwards from the next keyframe, so ask
 			// for one rather than wait for it (once the SFU has the
 			// setting), and decode nothing before it.
-			t.pub.SetEnabled(true)
+			t.ctl.setEnabled(true)
 			t.mu.Lock()
 			t.waitKey = true
 			t.mu.Unlock()
@@ -151,44 +148,46 @@ func (t *videoTrack) sendSize() {
 	slog.Info("video: size asked", "identity", t.who, "kind", t.kind, "w", w, "h", h)
 }
 
-func (r *room) subscribedVideo(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-	if !strings.EqualFold(track.Codec().MimeType, webrtc.MimeTypeH264) {
-		slog.Warn("video: not H.264, not shown", "identity", rp.Identity(), "codec", track.Codec().MimeType)
-		return
+// subscribedVideo starts showing a video track we're sent, and returns
+// what reads its RTCP.
+func (r *room) subscribedVideo(rt remoteTrack) func(rtcp.Packet) {
+	if !strings.EqualFold(rt.track.Codec().MimeType, webrtc.MimeTypeH264) {
+		slog.Warn("video: not H.264, not shown", "identity", rt.who, "codec", rt.track.Codec().MimeType)
+		return nil
 	}
 	if r.cfg.NewDecoder == nil {
-		slog.Info("video: no decoder; not shown", "identity", rp.Identity())
-		return
+		slog.Info("video: no decoder; not shown", "identity", rt.who)
+		return nil
 	}
 	dec, err := r.cfg.NewDecoder()
 	if err != nil {
 		slog.Error("video: decoder", "err", err)
-		return
+		return nil
 	}
 	kind := rtc.Camera
-	if pub.Source() == livekit.TrackSource_SCREEN_SHARE {
+	if rt.source == sourceScreen {
 		kind = rtc.Screen
 	}
-	t := &videoTrack{r: r, who: rp.Identity(), kind: kind, pub: pub, rp: rp, track: track, dec: dec,
+	t := &videoTrack{r: r, who: rt.who, kind: kind, ctl: rt.video, track: rt.track, dec: dec,
 		aus: make(chan au, 64), done: make(chan struct{}), waitKey: true, subAt: time.Now(),
 		wantW: -1, wantH: -1, sentW: -1, sentH: -1}
 	t.st.Identity, t.st.Kind = t.who, kind
-	pub.OnRTCP(t.sr.read)
 	r.mu.Lock()
-	r.videos[pub.SID()] = t
+	r.videos[rt.sid] = t
 	r.mu.Unlock()
-	slog.Info("video: receiving", "identity", t.who, "kind", kind, "track", pub.SID())
+	slog.Info("video: receiving", "identity", t.who, "kind", kind, "track", rt.sid)
 	go t.read()
 	go t.play()
 	if r.ev.VideoAdded != nil {
 		r.ev.VideoAdded(t)
 	}
+	return t.sr.read
 }
 
-func (r *room) unsubscribedVideo(pub *lksdk.RemoteTrackPublication) {
+func (r *room) unsubscribedVideo(sid string) {
 	r.mu.Lock()
-	t := r.videos[pub.SID()]
-	delete(r.videos, pub.SID())
+	t := r.videos[sid]
+	delete(r.videos, sid)
 	r.mu.Unlock()
 	if t == nil {
 		return
@@ -249,7 +248,7 @@ func (t *videoTrack) askKey() {
 	t.lastPLI = time.Now()
 	t.st.PLIs++
 	t.mu.Unlock()
-	t.rp.WritePLI(webrtc.SSRC(t.track.SSRC()))
+	t.ctl.pli()
 }
 
 // play holds each unit until the same person's audio reaches it, decodes

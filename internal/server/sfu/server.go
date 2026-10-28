@@ -50,6 +50,9 @@ type Server struct {
 	downAPI  *webrtc.API
 	now      func() time.Time // the clock tokens are checked against (tests move it)
 	closedCh chan struct{}
+	// answerWait is how long a down offer waits for its answer (tests
+	// shorten it).
+	answerWait time.Duration
 
 	mu     sync.Mutex
 	rooms  map[string]*room
@@ -80,7 +83,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("sfu: %w", err)
 	}
 	s := &Server{cfg: cfg, log: log, net: n, upAPI: upAPI, downAPI: downAPI, now: time.Now,
-		closedCh: make(chan struct{}), rooms: map[string]*room{}}
+		closedCh: make(chan struct{}), answerWait: answerWait, rooms: map[string]*room{}}
 	log.Info("sfu: media", "addrs", fmt.Sprint(n.addrs()), "ip", cfg.Network.IP, "external", cfg.Network.External)
 	return s, nil
 }

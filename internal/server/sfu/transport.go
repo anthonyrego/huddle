@@ -34,6 +34,11 @@ import (
 // and going, a joiner's whole room at once) into one offer.
 const negotiateAfter = 20 * time.Millisecond
 
+// answerWait is how long an offer on down waits for its answer before the
+// session is ended (LiveKit's negotiation timeout): a client that doesn't
+// answer can never be sent another track.
+const answerWait = 15 * time.Second
+
 // transport is one of a participant's two connections. On up the client
 // offers and the SFU answers. On down the SFU offers: the down tracks the
 // room says the participant should have are put on the connection, then
@@ -56,6 +61,7 @@ type transport struct {
 	offering bool        // down: an offer is out and its answer isn't in
 	again    bool        // down: something changed since; offer after the answer
 	timer    *time.Timer // down: the batching window
+	unanswer *time.Timer // down: the offer out ends the session if it fires
 	closed   bool
 }
 
@@ -182,6 +188,20 @@ func (t *transport) offer() {
 	if sdp == "" {
 		return
 	}
+	t.mu.Lock()
+	if t.unanswer != nil {
+		t.unanswer.Stop()
+	}
+	t.unanswer = time.AfterFunc(t.p.s.answerWait, func() {
+		t.mu.Lock()
+		out := t.offering && !t.closed
+		t.mu.Unlock()
+		if out {
+			t.p.log.Warn("sfu: no answer to an offer", "pc", t.role.String(), "after", t.p.s.answerWait)
+			t.p.kick("no answer to the server's offer")
+		}
+	})
+	t.mu.Unlock()
 	t.p.send(signal.KindOffer, signal.SDP{PC: t.name, SDP: sdp})
 }
 
@@ -237,6 +257,10 @@ func (t *transport) setAnswer(sdp string) error {
 	t.op.Unlock()
 	t.mu.Lock()
 	t.offering = false
+	if t.unanswer != nil {
+		t.unanswer.Stop()
+		t.unanswer = nil
+	}
 	again := t.again && err == nil
 	t.again = false
 	t.mu.Unlock()
@@ -253,6 +277,10 @@ func (t *transport) close() {
 	if t.timer != nil {
 		t.timer.Stop()
 		t.timer = nil
+	}
+	if t.unanswer != nil {
+		t.unanswer.Stop()
+		t.unanswer = nil
 	}
 	t.mu.Unlock()
 	if err := t.pc.Close(); err != nil {

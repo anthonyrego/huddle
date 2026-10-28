@@ -8,6 +8,10 @@ package main
 //     of the echo if echo cancellation works (its own tracks and other
 //     bots' aren't repeated).
 //   - play is a fixture participant: it plays an Ogg/Opus file, looping.
+//   - cam publishes the test pattern as a camera (1280x720 at 30 fps, three
+//     layers), or with -share as a screen (1920x1080 at 15 fps, two), so
+//     one person can see video arrive alone (macOS: it encodes with
+//     VideoToolbox).
 
 import (
 	"context"
@@ -34,15 +38,15 @@ import (
 )
 
 func init() {
-	register(&command{name: "bot", summary: "dev participants: bot echo (repeats each voice 1.5 s later), bot play -ogg f.ogg", run: runBot})
+	register(&command{name: "bot", summary: "dev participants: bot echo (repeats each voice 1.5 s later), bot play -ogg f.ogg, bot cam [-share] (the test pattern)", run: runBot})
 }
 
 // botSuffix ends every bot's identity, so bots don't echo bots.
 const botSuffix = "-bot"
 
 func runBot(args []string) error {
-	if len(args) == 0 || (args[0] != "echo" && args[0] != "play") {
-		return errors.New("usage: huddled bot echo [-room R] [-delay 1.5s] | huddled bot play -ogg f.ogg [-name N] [-room R] [-loop=false]")
+	if len(args) == 0 || (args[0] != "echo" && args[0] != "play" && args[0] != "cam") {
+		return errors.New("usage: huddled bot echo [-room R] [-delay 1.5s] | huddled bot play -ogg f.ogg [-name N] [-room R] [-loop=false] | huddled bot cam [-name N] [-room R] [-share]")
 	}
 	kind := args[0]
 	fs := flag.NewFlagSet("bot "+kind, flag.ContinueOnError)
@@ -51,6 +55,7 @@ func runBot(args []string) error {
 	delay := fs.Duration("delay", 1500*time.Millisecond, "echo: how much later each voice comes back")
 	oggPath := fs.String("ogg", "", "play: the Ogg/Opus file (scripts/voice-fixtures.sh makes some)")
 	loop := fs.Bool("loop", true, "play: start again at the end")
+	share := fs.Bool("share", false, "cam: publish the pattern as a screen share")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -58,6 +63,12 @@ func runBot(args []string) error {
 	lkrtc.QuietSDKLogs()
 	if *name == "" {
 		*name = "Echo"
+		if kind == "cam" {
+			*name = "Cam"
+			if *share {
+				*name = "Screen"
+			}
+		}
 		if kind == "play" {
 			base := strings.TrimSuffix(filepath.Base(*oggPath), filepath.Ext(*oggPath))
 			*name = strings.ToUpper(base[:min(1, len(base))]) + base[min(1, len(base)):]
@@ -79,6 +90,8 @@ func runBot(args []string) error {
 	switch kind {
 	case "echo":
 		return runEcho(ctx, url, tok, *delay)
+	case "cam":
+		return runCam(ctx, url, tok, *share)
 	default:
 		if *oggPath == "" {
 			return errors.New("bot play needs -ogg")

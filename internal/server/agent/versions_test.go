@@ -248,10 +248,15 @@ func TestVoiceOutResamplesAndPaces(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
 	defer cancel()
-	var frames int
-	v.run(ctx, func(p []byte, ts uint32) error { frames++; return nil })
-	if frames != 5 || len(on) != 2 || !on[0] || on[1] {
-		t.Fatalf("frames %d, speaking edges %v", frames, on)
+	var tss []uint32
+	v.run(ctx, func(p []byte, ts uint32) error { tss = append(tss, ts); return nil })
+	// The 100 ms is five frames; 400 ms after the last, a silent one keeps
+	// the track going, its timestamp following the clock.
+	if len(tss) != 6 || len(on) != 2 || !on[0] || on[1] {
+		t.Fatalf("frames %d, speaking edges %v", len(tss), on)
+	}
+	if gap := tss[5] - tss[4]; gap != keepAlive*frameLen {
+		t.Fatalf("the silent frame came %d samples after the last, want %d", gap, keepAlive*frameLen)
 	}
 	v.push(pcm, 24000)
 	v.cut()

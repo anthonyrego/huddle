@@ -45,6 +45,9 @@ type Connector struct {
 	// StatsEvery is how often each track's numbers go to the log; 0 is
 	// 10 s, negative never.
 	StatsEvery time.Duration
+	// Arrival, when set, is told of every received audio packet (a debug
+	// trace: huddle voice -arrivals).
+	Arrival func(identity string, seq uint16, ts uint32, size int, at time.Time)
 }
 
 // NewSim is a Connector.Sim with fixed settings and a fresh seed per stream.
@@ -189,6 +192,7 @@ type room struct {
 // remote is one subscribed audio track.
 type remote struct {
 	sid, who string
+	arrival  func(identity string, seq uint16, ts uint32, size int, at time.Time)
 	buf      *jitter.Buffer
 	levelExt atomic.Int32 // the last RFC 6464 level the packets carried, -1 none
 }
@@ -206,7 +210,7 @@ func (r *room) subscribed(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPubli
 		slog.Error("voice: decoder", "err", err)
 		return
 	}
-	t := &remote{sid: pub.SID(), who: rp.Identity(), buf: jitter.New(dec, r.cfg.Jitter)}
+	t := &remote{sid: pub.SID(), who: rp.Identity(), buf: jitter.New(dec, r.cfg.Jitter), arrival: r.cfg.Arrival}
 	t.levelExt.Store(-1)
 	r.mu.Lock()
 	r.tracks[t.sid] = t
@@ -234,7 +238,11 @@ func (t *remote) read(track *webrtc.TrackRemote, ext int) {
 				t.levelExt.Store(int32(b[0] & 0x7f))
 			}
 		}
-		t.buf.Push(jitter.Packet{Seq: p.SequenceNumber, TS: p.Timestamp, Payload: p.Payload}, time.Now())
+		now := time.Now()
+		if t.arrival != nil {
+			t.arrival(t.who, p.SequenceNumber, p.Timestamp, len(p.Payload), now)
+		}
+		t.buf.Push(jitter.Packet{Seq: p.SequenceNumber, TS: p.Timestamp, Payload: p.Payload}, now)
 	}
 }
 

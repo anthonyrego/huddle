@@ -17,6 +17,14 @@ const (
 	outRate  = opus.SampleRate
 	frameLen = opus.FrameSamples // 20 ms
 	tailMs   = 300               // speaking lasts this long past the last frame
+	// keepAlive is how many 20 ms ticks go by between answers before a
+	// silent frame is sent, as a person's mic sends a DTX frame every
+	// 400 ms. A track that has never sent is padded by LiveKit for a new
+	// subscriber, with frames whose timestamps drift about 1 ms a packet,
+	// and an answer starting during the padding played up to 300 ms late
+	// (AGENTS.md); between answers the frames keep the receivers' jitter
+	// windows going.
+	keepAlive = 20
 )
 
 // Encoder turns 20 ms of 48 kHz mono PCM into one Opus packet.
@@ -26,8 +34,8 @@ type Encoder interface {
 }
 
 // opusEncoder is the app's own Opus (internal/opus): 32 kbps with in-band
-// FEC, like a person's mic, but without DTX, since the voice is sent only
-// while there is some.
+// FEC, like a person's mic, but without DTX: between answers run sends its
+// own silent frame every 400 ms (keepAlive).
 type opusEncoder struct {
 	e   opus.Encoder
 	f   []float32
@@ -110,7 +118,8 @@ func (v *voiceOut) speaking() bool {
 	return v.on
 }
 
-// run writes a frame every 20 ms while there is voice to send. Each
+// run writes a frame every 20 ms while there is voice to send, and a silent
+// one every 400 ms between answers (keepAlive). Each
 // packet's RTP timestamp follows the clock, sent or not, as a person's mic
 // does: a receiver sees the quiet between answers as time going by, where a
 // timestamp that stood still would read as the network holding packets back
@@ -118,10 +127,11 @@ func (v *voiceOut) speaking() bool {
 func (v *voiceOut) run(ctx context.Context, write func(packet []byte, ts uint32) error) {
 	t := time.NewTicker(20 * time.Millisecond)
 	defer t.Stop()
-	frame := make([]int16, frameLen)
+	frame, hush := make([]int16, frameLen), make([]int16, frameLen)
 	start, ts0 := time.Now(), rand.Uint32()|1
 	var last uint32
 	var sent bool
+	quiet := keepAlive // ticks since a frame went out
 	for {
 		select {
 		case <-ctx.Done():
@@ -143,8 +153,14 @@ func (v *voiceOut) run(ctx context.Context, write func(packet []byte, ts uint32)
 				v.on, change = false, -1
 			}
 			v.mu.Unlock()
-			if have {
-				if pkt, err := v.enc.Encode(frame); err == nil {
+			out := frame
+			if !have {
+				quiet++
+				out = hush
+			}
+			if have || quiet >= keepAlive {
+				quiet = 0
+				if pkt, err := v.enc.Encode(out); err == nil {
 					// The tick's frame number (the tick's own time, rounded),
 					// never the same as the last one sent.
 					n := uint32((now.Sub(start) + 10*time.Millisecond) / (20 * time.Millisecond))

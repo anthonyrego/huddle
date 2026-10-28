@@ -7,6 +7,7 @@ package main
 // a bot) are a file-to-file test; voice-check runs the measured ones.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"os/signal"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -62,6 +64,7 @@ func runVoice(args []string) error {
 	server := fs.String("server", envOr("HUDDLE_SERVER", "http://localhost:8080"), "the huddle server (HUDDLE_SERVER)")
 	name := fs.String("name", "voice", "the name to join as")
 	dur := fs.Duration("for", 0, "how long to stay (default: the input's length plus 3 s, or until interrupted without -in)")
+	arrivals := fs.String("arrivals", "", "write every received packet (identity, seq, timestamp, bytes, arrival ns) to this CSV")
 	var sim simFlags
 	sim.register(fs)
 	if err := fs.Parse(args); err != nil {
@@ -95,7 +98,24 @@ func runVoice(args []string) error {
 	if err != nil {
 		return err
 	}
-	rm, err := sim.connector().Connect(ctx, rtc.Join{URL: j.LiveKitURL, Token: j.Token, Identity: j.Identity}, rtc.Events{})
+	conn := sim.connector()
+	if *arrivals != "" {
+		f, err := os.Create(*arrivals)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		var mu sync.Mutex
+		w := bufio.NewWriter(f)
+		defer func() { mu.Lock(); w.Flush(); mu.Unlock() }()
+		fmt.Fprintln(w, "identity,seq,ts,bytes,at_ns")
+		conn.Arrival = func(id string, seq uint16, ts uint32, size int, at time.Time) {
+			mu.Lock()
+			fmt.Fprintf(w, "%s,%d,%d,%d,%d\n", id, seq, ts, size, at.UnixNano())
+			mu.Unlock()
+		}
+	}
+	rm, err := conn.Connect(ctx, rtc.Join{URL: j.LiveKitURL, Token: j.Token, Identity: j.Identity}, rtc.Events{})
 	if err != nil {
 		return err
 	}

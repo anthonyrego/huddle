@@ -18,13 +18,19 @@ import (
 // publishVoice publishes c's microphone and starts it speaking at level.
 func publishVoice(t *testing.T, c *testClient, level uint8) (*speaker, string) {
 	t.Helper()
+	return publishSpeaker(t, c, level, false)
+}
+
+// publishSpeaker is publishVoice, the speaker clocked or not.
+func publishSpeaker(t *testing.T, c *testClient, level uint8, clocked bool) (*speaker, string) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 	tr, sid, err := c.s.PublishAudio(ctx, "microphone")
 	if err != nil {
 		t.Fatalf("%s: publish: %v", c.id, err)
 	}
-	return speak(t, c.id, tr, level), sid
+	return speak(t, c.id, tr, level, clocked), sid
 }
 
 // hearsAll waits until each client has heard a frame from each speaker but

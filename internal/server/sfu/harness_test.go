@@ -363,18 +363,25 @@ func parseFrame(b []byte) (string, int, bool) {
 // speaker writes a voice in real time: frame n at its start plus n × 20 ms,
 // RTP timestamp base + n × 960, at the level it's set to. Frames the track
 // isn't negotiated for yet aren't counted: frame 0 is the first written.
+// A clocked speaker stamps each frame with when it's written instead, as a
+// capture clock would, so a timer that wakes late doesn't move the RTP
+// time its sender reports give.
 type speaker struct {
-	who   string
-	track *sfuclient.Track
-	base  uint32
-	level atomic.Uint32
-	sent  atomic.Int64 // frames written
-	stop  chan struct{}
-	done  chan struct{}
+	who     string
+	track   *sfuclient.Track
+	base    uint32
+	clocked bool
+	level   atomic.Uint32
+	sent    atomic.Int64 // frames written
+	stop    chan struct{}
+	done    chan struct{}
+
+	mu  sync.Mutex
+	tss []uint32 // each frame's RTP timestamp
 }
 
-func speak(t *testing.T, who string, track *sfuclient.Track, level uint8) *speaker {
-	sp := &speaker{who: who, track: track, base: uint32(len(who)) * 1_000_003, stop: make(chan struct{}), done: make(chan struct{})}
+func speak(t *testing.T, who string, track *sfuclient.Track, level uint8, clocked bool) *speaker {
+	sp := &speaker{who: who, track: track, base: uint32(len(who)) * 1_000_003, clocked: clocked, stop: make(chan struct{}), done: make(chan struct{})}
 	sp.level.Store(uint32(level))
 	go sp.run()
 	t.Cleanup(sp.halt)
@@ -393,7 +400,13 @@ func (sp *speaker) run() {
 		}
 		lv := uint8(sp.level.Load())
 		ts := sp.base + uint32(n)*960
+		if sp.clocked {
+			ts = sp.base + uint32(time.Since(start).Seconds()*48000)
+		}
 		if err := sp.track.WriteFrame(frameBytes(sp.who, n), ts, &lv); err == nil {
+			sp.mu.Lock()
+			sp.tss = append(sp.tss, ts)
+			sp.mu.Unlock()
 			n++
 			sp.sent.Store(int64(n))
 		}
@@ -411,7 +424,11 @@ func (sp *speaker) halt() {
 }
 
 // tsOf is the RTP timestamp the speaker wrote frame n at.
-func (sp *speaker) tsOf(n int) uint32 { return sp.base + uint32(n)*960 }
+func (sp *speaker) tsOf(n int) uint32 {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	return sp.tss[n]
+}
 
 // What tests look at on the SFU's side.
 

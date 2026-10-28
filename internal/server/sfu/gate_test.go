@@ -41,10 +41,13 @@ func TestLateJoiner(t *testing.T) {
 	connected, first, added := d.subConnected, h.firstAt, h.addedAt
 	frames, tss, bad, packets := slices.Clone(h.frames), slices.Clone(h.tss), slices.Clone(h.bad), h.packets
 	d.mu.Unlock()
+	// The connection's event and the track's come from goroutines of their
+	// own, so the first packet may be read before the event is delivered:
+	// less than no time.
 	delay := first.Sub(connected)
 	t.Logf("d's receive connection up to a's first packet: %v (track added %v after it); %d packets, frames %d–%d of %d sent",
 		delay.Round(100*time.Microsecond), added.Sub(connected).Round(100*time.Microsecond), packets, frames[0], frames[len(frames)-1], sent["a"])
-	if connected.IsZero() || delay > 100*time.Millisecond || delay < 0 {
+	if connected.IsZero() || delay > 100*time.Millisecond {
 		t.Errorf("first packet %v after the receive connection connected, want within 100 ms", delay)
 	}
 	if len(bad) > 0 || packets != len(frames) {
@@ -61,11 +64,13 @@ func TestLateJoiner(t *testing.T) {
 
 func TestSenderReports(t *testing.T) {
 	ts := newTestSFU(t, nil)
-	// The publisher's own reports, as its connection sends them.
+	// The publisher's own reports, as its connection sends them. Its frames
+	// are stamped from the clock, so its reports map RTP time to when
+	// frames were written however late its timer wakes.
 	var mine srRecorder
 	a := ts.join(t, "r", "a", sfuclient.Options{Publish: []interceptor.Factory{&mine}})
 	b := ts.join(t, "r", "b", sfuclient.Options{})
-	sp, _ := publishVoice(t, a, 25)
+	sp, _ := publishSpeaker(t, a, 25, true)
 	waitFor(t, wait, "b to hear a", func() bool { return len(b.framesFrom("a")) > 0 })
 	waitFor(t, 3*wait, "four sender reports on b's track", func() bool {
 		b.mu.Lock()
@@ -98,17 +103,16 @@ func TestSenderReports(t *testing.T) {
 		}
 	}
 
-	// Two RTP times the publisher sent a second apart, each mapped through
-	// a different report of the subscriber's, are a second apart on the
-	// SFU's clock.
+	// Two RTP times a second apart, each mapped through a different report
+	// of the subscriber's, are a second apart on the SFU's clock.
 	var worst time.Duration
 	for i := 1; i < len(srs); i++ {
-		n1 := n0 + 10*i
-		n2 := n1 + 50
-		t1, t2 := srTime(srs[i-1], downTS[n1]), srTime(srs[i], downTS[n2])
+		r1 := downTS[n0+10*i]
+		r2 := r1 + 48000
+		t1, t2 := srTime(srs[i-1], r1), srTime(srs[i], r2)
 		err := t2.Sub(t1) - time.Second
 		worst = max(worst, err.Abs())
-		t.Logf("frames %d and %d, through reports %d and %d (%v apart): %v apart", n1, n2, i-1, i,
+		t.Logf("RTP %d and %d, through reports %d and %d (%v apart): %v apart", r1, r2, i-1, i,
 			srs[i].at.Sub(srs[i-1].at).Round(time.Millisecond), t2.Sub(t1))
 	}
 	t.Logf("a second of the publisher's, through the SFU's reports: off by %v at most", worst)
@@ -308,6 +312,7 @@ func TestSameIdentity(t *testing.T) {
 	waitFor(t, wait, "b to see a leave and come back", func() bool { return b.has("arrived a") })
 	before(t, b, "removed a audio", "left a")
 	before(t, b, "left a", "arrived a")
+	waitFor(t, wait, "the second a's joined", func() bool { return len(a2.eventLog()) > 0 })
 	if got := a2.eventLog()[0]; got != "joined b" {
 		t.Errorf("the second a's first event %q, want joined b", got)
 	}
@@ -320,6 +325,47 @@ func TestSameIdentity(t *testing.T) {
 		return h != nil && !h.ended && len(h.frames) > 10
 	})
 	sp2.halt()
+}
+
+// TestSendOnlyAndMute checks a session that subscribes to nothing (a bot):
+// it hears who's there and what they publish, is offered nothing, and is
+// heard. Its mute reaches the others, and takes it off the speakers.
+func TestSendOnlyAndMute(t *testing.T) {
+	ts := newTestSFU(t, nil)
+	a := ts.join(t, "r", "a", sfuclient.Options{})
+	spA, _ := publishVoice(t, a, 20)
+	bot := ts.join(t, "r", "bot", sfuclient.Options{SendOnly: true})
+	spBot, sid := publishVoice(t, bot, 10)
+	waitFor(t, wait, "a to hear the bot", func() bool { return len(a.framesFrom("bot")) > 10 })
+	waitFor(t, wait, "the bot to hear of a and its track", func() bool { return bot.has("joined a") })
+	if got := bot.s.Participants(); len(got) != 1 || got[0].Identity != "a" || len(got[0].Tracks) != 1 {
+		t.Errorf("the bot's participants: %+v, want a and its voice", got)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if p := ts.s.room("r").participant("bot"); p.down.mlines() != 0 || bot.from("a", signal.Audio) != nil {
+		t.Errorf("a session that subscribes to nothing was offered a's voice")
+	}
+	waitFor(t, wait, "a to hear the bot loudest", func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		n := len(a.speakers)
+		return n > 0 && len(a.speakers[n-1]) == 2 && a.speakers[n-1][0].Identity == "bot"
+	})
+
+	// Muted, though it goes on sending (the app stops; the SFU doesn't
+	// count on it).
+	if err := bot.s.Mute(sid, true); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, wait, "a to hear the bot muted", func() bool { return a.has("info bot audio muted=true") })
+	waitFor(t, wait, "the bot off the speakers", func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		n := len(a.speakers)
+		return n > 0 && len(a.speakers[n-1]) == 1 && a.speakers[n-1][0].Identity == "a"
+	})
+	spBot.halt()
+	spA.halt()
 }
 
 // TestServerCloses checks that a closing server tells everyone bye, and

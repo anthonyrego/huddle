@@ -125,3 +125,24 @@ func TestSegmentsAndAgentState(t *testing.T) {
 		t.Fatalf("agent state %+v", a)
 	}
 }
+
+func TestVoicePolicy(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	id := meetingID(t)
+	if _, err := s.EnsureMeeting(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := s.Voice(ctx, id); err != nil || v != "" {
+		t.Fatalf("unset voice = %q, %v", v, err)
+	}
+	if err := s.SetVoice(ctx, id, "muted"); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := s.Voice(ctx, id); err != nil || v != "muted" {
+		t.Fatalf("voice = %q, %v", v, err)
+	}
+	if err := s.SetVoice(ctx, "no-such-meeting-"+id, "muted"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("setting a missing meeting's voice: %v", err)
+	}
+}

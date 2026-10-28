@@ -5,3 +5,4 @@
 /testdata/meetings/*.ogg
 /testdata/meetings/*.wav
 .DS_Store
+/testdata/meetings/*.timing.json

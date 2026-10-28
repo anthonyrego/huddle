@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/anthonyrego/huddle/internal/server/agent"
 	"github.com/anthonyrego/huddle/internal/server/httpapi"
 	"github.com/anthonyrego/huddle/internal/server/lktoken"
 	"github.com/anthonyrego/huddle/internal/server/store"
@@ -66,16 +67,32 @@ func runServe(args []string) error {
 		slog.Info("serve: migrated", "versions", applied)
 	}
 
-	hub := &wshub.Hub{
-		Join: func(ctx context.Context, hi wire.Hello) (wire.Welcome, [][]byte, error) {
-			return welcome(ctx, st, hi)
-		},
-		OnMessage: func(room, identity string, e wire.Envelope) {
-			// Track A gives these to the room's whiteboard.
-			slog.Info("ws: message", "room", room, "identity", identity, "kind", e.Kind)
-		},
+	hub := &wshub.Hub{}
+	// The whiteboard: one agent per active room, when there is a key.
+	var agents *agent.Manager
+	if key := os.Getenv("GEMINI_API_KEY"); key != "" && os.Getenv("HUDDLE_WHITEBOARD") != "0" {
+		agents = agent.NewManager(ctx, agent.Config{
+			Store: st, Hub: hub, APIKey: key, Minter: minter, LiveKitURL: lkURL,
+			Voice: os.Getenv("HUDDLE_VOICE"),
+		})
+		defer func() { stop(); agents.Wait() }()
+	} else {
+		slog.Warn("serve: no GEMINI_API_KEY: the whiteboard is off")
 	}
-	api := &httpapi.Server{Rooms: storeRooms{st}, Minter: minter, LiveKitURL: lkURL, WS: hub, Dev: true}
+	hub.Join = func(ctx context.Context, hi wire.Hello) (wire.Welcome, [][]byte, error) {
+		w, frames, err := welcome(ctx, st, hi)
+		if err == nil && agents != nil {
+			agents.Ensure(hi.Room)
+		}
+		return w, frames, err
+	}
+	hub.OnMessage = func(room, identity string, e wire.Envelope) {
+		slog.Info("ws: message", "room", room, "identity", identity, "kind", e.Kind)
+		if agents != nil {
+			agents.Deliver(room, identity, e)
+		}
+	}
+	api := &httpapi.Server{Rooms: storeRooms{st, agents}, Minter: minter, LiveKitURL: lkURL, WS: hub, Dev: true}
 	srv := &http.Server{Addr: *addr, Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
@@ -118,10 +135,16 @@ func welcome(ctx context.Context, st *store.Store, hi wire.Hello) (wire.Welcome,
 	return w, [][]byte{frame}, nil
 }
 
-// storeRooms makes dev rooms into meetings.
-type storeRooms struct{ st *store.Store }
+// storeRooms makes dev rooms into meetings, with a whiteboard in each.
+type storeRooms struct {
+	st     *store.Store
+	agents *agent.Manager
+}
 
 func (r storeRooms) EnsureRoom(ctx context.Context, room string) error {
 	_, err := r.st.EnsureMeeting(ctx, room)
+	if err == nil && r.agents != nil {
+		r.agents.Ensure(room)
+	}
 	return err
 }

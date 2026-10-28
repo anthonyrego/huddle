@@ -18,6 +18,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/anthonyrego/huddle/internal/board"
+	"github.com/anthonyrego/huddle/internal/board/layout"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
 
@@ -149,8 +150,28 @@ func (c *conn) handle(e wire.Envelope) error {
 		if err != nil {
 			return err
 		}
-		slog.Info("conn: version", "seq", v.Seq, "ops", len(snap.Ops), "requester", v.Requester)
-		c.mt.setVersion(v.Seq, snap.Ops, nil)
+		var pl *layout.Placement
+		if len(v.Layout) > 0 {
+			pl = new(layout.Placement)
+			if err := json.Unmarshal(v.Layout, pl); err != nil {
+				slog.Warn("conn: layout", "err", err)
+				pl = nil
+			}
+		}
+		slog.Info("conn: version", "seq", v.Seq, "ops", len(snap.Ops), "requester", v.Requester, "placed", pl != nil)
+		c.mt.setVersion(v.Seq, snap.Ops, pl, nil)
+	case wire.KindBoardOps:
+		var o wire.BoardOps
+		if err := e.Decode(&o); err != nil {
+			return err
+		}
+		var ops []board.Op
+		for _, raw := range o.Ops {
+			if op, err := board.ParseOp(raw); err == nil {
+				ops = append(ops, op)
+			}
+		}
+		c.mt.setOps(o.Seq, ops)
 	case wire.KindAgentStatus:
 		var a wire.AgentStatus
 		if err := e.Decode(&a); err != nil {

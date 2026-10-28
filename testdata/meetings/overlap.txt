@@ -1,0 +1,20 @@
+# Two people command the whiteboard at once, twice; sorting, satellites and undo.
+@voice Kim Karen
+@voice Rishi Rishi
+@voice Tessa Tessa
+Kim: Let's list the options for the conference venue.
+Rishi: Lisbon, Berlin and Austin came up last time.
+Kim [command]: Whiteboard, make a group called venues with Lisbon, Berlin and Austin.
+& Rishi [command]: Whiteboard, add a note to the notes panel: the budget is fifty thousand.
+@pause 4
+Tessa [distractor]: We sketched these on a whiteboard last week anyway.
+Tessa [command]: Whiteboard, sort the venues alphabetically.
+@pause 3
+Rishi: Austin is the most expensive, I think.
+Kim [command]: Whiteboard, add a con under Austin: expensive flights.
+& Tessa [command]: Whiteboard, add a pro under Lisbon: good weather.
+@pause 4
+Kim [question]: Whiteboard, which venue comes first on the list?
+@pause 5
+Rishi [command]: Whiteboard, undo the last change.
+@pause 4

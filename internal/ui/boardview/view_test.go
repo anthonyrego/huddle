@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/anthonyrego/huddle/internal/board"
+	"github.com/anthonyrego/huddle/internal/board/measure"
 	"github.com/anthonyrego/huddle/internal/draw"
 	"github.com/anthonyrego/huddle/internal/text"
 	"github.com/anthonyrego/huddle/internal/theme"
@@ -69,7 +70,7 @@ func center(r draw.Rect) draw.Point { return draw.Point{X: r.X + r.W/2, Y: r.Y +
 // know the kinds, retired ones included (saved boards still use them).
 func TestEveryKindHasATag(t *testing.T) {
 	for _, k := range slices.Concat(board.Kinds, board.Retired) {
-		if tags[k] == "" {
+		if measure.Tags[k] == "" {
 			t.Errorf("no tag for %s", k)
 		}
 	}
@@ -90,7 +91,7 @@ func TestLayoutStaysStill(t *testing.T) {
 			for i, op := range ops {
 				before := map[string]draw.Rect{}
 				for id, r := range v.Layout().Boxes {
-					before[id] = r
+					before[id] = r.Rect()
 				}
 				if err := doc.Apply(op); err != nil {
 					t.Fatalf("op %d (%s %s): %v", i+1, op.Name, op.ID, err)
@@ -105,7 +106,7 @@ func TestLayoutStaysStill(t *testing.T) {
 				var ds []float64
 				for id, r := range v.Layout().Boxes {
 					if b, ok := before[id]; ok {
-						a, c := center(b), center(r)
+						a, c := center(b), center(r.Rect())
 						ds = append(ds, math.Hypot(float64(a.X-c.X), float64(a.Y-c.Y)))
 					}
 				}
@@ -135,7 +136,7 @@ func assertNoOverlaps(t *testing.T, v *View) {
 	slices.Sort(ids)
 	for i, a := range ids {
 		for _, b := range ids[i+1:] {
-			if !lo.Boxes[a].Intersect(lo.Boxes[b]).Empty() {
+			if !lo.Boxes[a].Rect().Intersect(lo.Boxes[b].Rect()).Empty() {
 				t.Errorf("boxes %s and %s overlap: %+v %+v", a, b, lo.Boxes[a], lo.Boxes[b])
 			}
 		}
@@ -150,8 +151,8 @@ func assertNoOverlaps(t *testing.T, v *View) {
 			if v.doc.Node(id).Group == g.ID {
 				continue
 			}
-			if !r.Intersect(lo.Boxes[id]).Empty() {
-				t.Logf("frame %s covers %s, which isn't in it", g.ID, id)
+			if !r.Intersect(lo.Boxes[id].Rect()).Empty() {
+				t.Errorf("frame %s covers %s, which isn't in it", g.ID, id)
 			}
 		}
 	}
@@ -206,7 +207,7 @@ func TestResetShowsAnotherBoard(t *testing.T) {
 		if _, ok := v.from[id]; ok {
 			t.Fatalf("%s glides from the board before", id)
 		}
-		if v.born[id] != now {
+		if b, ok := v.born[id]; !ok || b.Before(now) {
 			t.Fatalf("%s doesn't fade in", id)
 		}
 	}

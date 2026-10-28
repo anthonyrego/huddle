@@ -1,0 +1,23 @@
+# Auto mode: the whiteboard keeps notes as the meeting goes, until someone says stop.
+@voice Moira Moira
+@voice Fred Fred
+@voice Dan Daniel
+Moira [command]: Whiteboard, keep diagramming and take notes as we go.
+@pause 3
+Fred: So for the offsite we need a date, a place and an agenda.
+Dan: I can own the agenda. Let's say the second week of March.
+Moira: Decided then, the second week of March. Fred, you find the place.
+Fred: Fine, I'll have three options by Friday.
+Dan: The agenda has a strategy morning and a team afternoon.
+Moira: And a dinner on the first night. That's important to me.
+@pause 20
+Fred: Budget wise we have about twenty thousand for all of it.
+Dan: Then the dinner can't be too fancy.
+Moira: Agreed. We'll pick something simple.
+Fred: One open question is whether partners are invited.
+@pause 20
+Dan [stop]: Whiteboard, stop.
+@pause 3
+Fred: Okay, I think we're done with the offsite.
+Moira [question]: Whiteboard, what did we decide about the date?
+@pause 6

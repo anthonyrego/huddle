@@ -3,6 +3,7 @@ package board
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -16,6 +17,17 @@ const (
 	Remove   = "remove"
 	PointAt  = "point_at"
 	GetBoard = "get_board"
+	Sort     = "order"
+	Notes    = "notes"
+
+	// What the server does itself rather than the board: a new version
+	// from an older one, the spoken-answer flag, a read of the stored
+	// transcript and auto mode.
+	Undo       = "undo"
+	RevertTo   = "revert_to"
+	Speak      = "speak"
+	Transcript = "transcript"
+	Auto       = "auto"
 )
 
 // DefaultPointMS is how long point_at highlights when it doesn't say.
@@ -39,11 +51,28 @@ type Op struct {
 	Target  string   `json:"target,omitempty"`
 	Text    string   `json:"text,omitempty"`
 	MS      int      `json:"ms,omitempty"`
+	By      string   `json:"by,omitempty"`      // order
+	Lines   []string `json:"lines,omitempty"`   // notes
+	Replace bool     `json:"replace,omitempty"` // notes
+	Version int64    `json:"version,omitempty"` // revert_to
+	FromMs  int64    `json:"from_ms,omitempty"` // transcript
+	ToMs    int64    `json:"to_ms,omitempty"`   // transcript
+	Enabled bool     `json:"enabled,omitempty"` // auto
 }
 
-// Changes reports whether the op changes the board (point_at and get_board
-// don't).
-func (o Op) Changes() bool { return o.Name != PointAt && o.Name != GetBoard }
+// Changes reports whether the op changes the board itself, so it belongs
+// in a version's snapshot. Undo and revert_to make versions too, but out
+// of older snapshots (Versioned), not by changing this one.
+func (o Op) Changes() bool {
+	switch o.Name {
+	case PointAt, GetBoard, Undo, RevertTo, Speak, Transcript, Auto:
+		return false
+	}
+	return true
+}
+
+// Versioned reports whether the op makes a version from an older one.
+func (o Op) Versioned() bool { return o.Name == Undo || o.Name == RevertTo }
 
 // Decode turns a tool call into an op. It forgives what a voice model gets
 // loosely right: a lone id where a list is expected, ids with spaces or
@@ -53,6 +82,9 @@ func Decode(name string, args map[string]any) (Op, error) {
 	for k, v := range args {
 		if s, ok := v.(string); ok && (k == "ids" || k == "members") {
 			v = strings.Split(s, ",")
+		}
+		if s, ok := v.(string); ok && k == "lines" {
+			v = []string{s}
 		}
 		fixed[k] = v
 	}
@@ -93,9 +125,36 @@ func (o *Op) normalize() {
 		*ids = out
 	}
 	o.Kind = Kind(strings.ToLower(strings.TrimSpace(string(o.Kind))))
+	o.By = normBy(o.By)
+	if o.Group == "board" {
+		o.Group = ""
+	}
+	lines := o.Lines[:0]
+	for _, l := range o.Lines {
+		if l = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(l), "-•*")); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	o.Lines = lines
 	o.Label = strings.TrimSpace(o.Label)
 	o.Detail = strings.TrimSpace(o.Detail)
 	o.Text = strings.TrimSpace(o.Text)
+}
+
+// normBy reads the ways a model names a sort.
+func normBy(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch {
+	case s == "":
+		return ""
+	case strings.HasPrefix(s, "alpha"), s == "name", s == "label", s == "a-z":
+		return ByAlpha
+	case strings.HasPrefix(s, "chrono"), s == "time", s == "added", s == "order added":
+		return ByChrono
+	case s == "custom", s == "given", s == "manual":
+		return ByCustom
+	}
+	return s
 }
 
 // NormID lowercases an id and joins its words with underscores. A link id
@@ -151,10 +210,52 @@ func (d *Doc) Apply(op Op) error {
 			}
 		}
 		return nil
-	case GetBoard:
+	case GetBoard, Speak, Transcript, Auto:
 		return nil
+	case Sort:
+		return d.sortOp(op)
+	case Notes:
+		if op.Replace {
+			d.notes = nil
+		} else if len(op.Lines) == 0 {
+			return fmt.Errorf("notes: lines is empty")
+		}
+		d.notes = append(d.notes, op.Lines...)
+		if len(d.notes) > MaxNotes {
+			d.notes = d.notes[len(d.notes)-MaxNotes:]
+		}
+		return nil
+	case Undo, RevertTo:
+		return fmt.Errorf("%s makes a version from an older one; only the server applies it", op.Name)
 	}
 	return fmt.Errorf("unknown op %q", op.Name)
+}
+
+func (d *Doc) sortOp(op Op) error {
+	target := op.Group
+	if target != "" && d.groups[target] == nil {
+		return fmt.Errorf("order: no group %q (leave group out to sort the whole board)", target)
+	}
+	switch op.By {
+	case "none":
+		delete(d.orders, target)
+		return nil
+	case ByAlpha, ByChrono:
+		d.orders[target] = Order{By: op.By}
+		return nil
+	case ByCustom:
+		if len(op.IDs) == 0 {
+			return fmt.Errorf("order: a custom order needs ids, in the order wanted")
+		}
+		for _, id := range op.IDs {
+			if d.nodes[id] == nil && d.groups[id] == nil {
+				return d.noBox(id)
+			}
+		}
+		d.orders[target] = Order{By: ByCustom, IDs: slices.Clone(op.IDs)}
+		return nil
+	}
+	return fmt.Errorf("order: by %q isn't alpha, chrono, custom or none", op.By)
 }
 
 func (d *Doc) noBox(id string) error {

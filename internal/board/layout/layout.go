@@ -44,6 +44,9 @@ type Input struct {
 	Roots []string // where the flows start, in order; nodes none of them reach go in a band below
 	Prev  *Output  // the previous layout, whose order this keeps where it can
 	Style Style
+	// Key, when set, orders the cards in every column (a sort someone
+	// asked for); routes passing through keep their lanes.
+	Key func(a, b string) int
 }
 
 // Style is the spacing, in logical units.
@@ -129,7 +132,7 @@ func Layout(in Input) *Output {
 		if b == 0 {
 			roots = in.Roots
 		}
-		l := &band{st: st, nodes: nodes, edges: edges, idx: be, roots: roots, prev: prev}
+		l := &band{st: st, nodes: nodes, edges: edges, idx: be, roots: roots, prev: prev, key: in.Key}
 		h := l.run(st.Margin, top, out, routes)
 		top += h + st.BandGap
 	}
@@ -219,6 +222,7 @@ type band struct {
 	idx   []int // the band's edges, as indexes into edges
 	roots []string
 	prev  map[string]float32
+	key   func(a, b string) int
 
 	units map[string]*unit
 	cols  [][]*unit
@@ -436,7 +440,42 @@ func (l *band) order() {
 			l.restore(snap)
 		}
 	}
+	if l.key != nil {
+		l.sortByKey()
+	}
 }
+
+// sortByKey puts each column's cards in key order, in the slots cards
+// already hold: lanes stay where they are.
+func (l *band) sortByKey() {
+	for r, col := range l.cols {
+		var slots []int
+		var cards []*unit
+		for i, u := range col {
+			if u.node != nil {
+				slots = append(slots, i)
+				cards = append(cards, u)
+			}
+		}
+		slices.SortStableFunc(cards, func(a, b *unit) int { return l.key(a.id, b.id) })
+		for k, i := range slots {
+			col[i] = cards[k]
+		}
+		l.reindex(r)
+	}
+}
+
+// Seed is a previous layout made only of where things were: the y
+// centers of cards (and lanes) by id. A layout seeded from it keeps their
+// order where it can.
+func Seed(centers map[string]float32) *Output { return &Output{center: centers} }
+
+// Centers are the y centers of everything placed, to seed the next layout.
+func (o *Output) Centers() map[string]float32 { return o.center }
+
+// Curve is a route that ignores columns: out of p to the right, into q
+// from the left.
+func Curve(p, q draw.Point) []draw.Point { return direct(p, q) }
 
 func (l *band) inBary(u *unit) (float64, bool) {
 	if len(u.ins) == 0 {

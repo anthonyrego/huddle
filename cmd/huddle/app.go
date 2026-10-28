@@ -147,6 +147,13 @@ func runApp(args []string) error {
 	default:
 		c := newConn(*server, *room, *name, mt)
 		a.scene.send = c.send
+		a.scene.textInput = func(on bool) {
+			if on {
+				a.window.Handle().StartTextInput()
+			} else {
+				a.window.Handle().StopTextInput()
+			}
+		}
 		cl := newCall(*noVoice, mt.wake)
 		c.onJoin = cl.onJoin
 		a.scene.call = cl
@@ -182,7 +189,7 @@ func playFixture(ctx context.Context, ops []board.Op, every time.Duration, mt *m
 				continue
 			}
 			shown = append(shown, op)
-			mt.setVersion(int64(len(shown)), append([]board.Op(nil), shown...), []board.Op{op})
+			mt.setVersion(int64(len(shown)), append([]board.Op(nil), shown...), nil, []board.Op{op})
 		}
 	}
 	mt.setConn(connFixtureEnd, "")

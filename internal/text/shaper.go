@@ -40,6 +40,10 @@ type Shaper struct {
 	// per face. noFastPath forces HarfBuzz (tests compare the two).
 	ascii      []*asciiTable
 	noFastPath bool
+
+	// embeddedOnly never falls back to a system face: a character the
+	// embedded faces lack draws as their missing-glyph box.
+	embeddedOnly bool
 }
 
 // NewShaper returns a Shaper over the embedded fonts, falling back to
@@ -55,6 +59,19 @@ func NewShaper() (*Shaper, error) {
 		s.faces = append(s.faces, face)
 		s.ids[face] = draw.FontID(i)
 	}
+	return s, nil
+}
+
+// NewEmbeddedShaper returns a Shaper over the embedded fonts only. What
+// it measures depends on nothing but this binary, so every machine breaks
+// lines and sizes text the same way (the board is laid out on the server
+// and drawn by every app).
+func NewEmbeddedShaper() (*Shaper, error) {
+	s, err := NewShaper()
+	if err != nil {
+		return nil, err
+	}
+	s.embeddedOnly = true
 	return s, nil
 }
 

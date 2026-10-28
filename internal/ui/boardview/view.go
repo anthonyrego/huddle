@@ -1,8 +1,14 @@
-// Package boardview draws the board: boxes laid out left to right in the
-// order of the work, the satellites under them, frames around groups, and
-// the arrows. When the board changes, boxes glide to their new places and
-// new ones fade in; the camera keeps the whole board in view until the user
-// pans or zooms. Pure: the window and offscreen renders use the same view.
+// Package boardview draws the board: boxes where the layout put them, the
+// satellites under them, frames around groups, the arrows and the
+// meeting's notes panel. When the board changes, boxes glide to their new
+// places and new ones fade in, one after another in the order they were
+// drawn; the camera keeps the whole board in view until the user pans or
+// zooms. Pure: the window and offscreen renders use the same view.
+//
+// Where everything goes comes from the server with each version (a
+// layout.Placement); without one the view runs the same layout itself.
+// Cards are measured with the embedded fonts only (package measure), so
+// they are the size the server placed.
 //
 // Copied from an earlier project of the author's.
 package boardview
@@ -14,17 +20,19 @@ import (
 
 	"github.com/anthonyrego/huddle/internal/board"
 	"github.com/anthonyrego/huddle/internal/board/layout"
+	"github.com/anthonyrego/huddle/internal/board/measure"
 	"github.com/anthonyrego/huddle/internal/draw"
 	"github.com/anthonyrego/huddle/internal/text"
 	"github.com/anthonyrego/huddle/internal/ui"
 )
 
 const (
-	moveDur  = 380 * time.Millisecond // boxes glide to new places
-	bornDur  = 320 * time.Millisecond // new boxes fade in
-	camDur   = 420 * time.Millisecond // the camera follows the board
-	pointIn  = 140 * time.Millisecond
-	pointOut = 500 * time.Millisecond
+	moveDur   = 380 * time.Millisecond // boxes glide to new places
+	bornDur   = 320 * time.Millisecond // new boxes fade in
+	revealGap = 140 * time.Millisecond // between new boxes, in the order they were drawn
+	camDur    = 420 * time.Millisecond // the camera follows the board
+	pointIn   = 140 * time.Millisecond
+	pointOut  = 500 * time.Millisecond
 
 	maxFit     = 1.25 // the camera never fits closer than this
 	minScale   = 0.2
@@ -34,17 +42,15 @@ const (
 	zoomSettle = 160 * time.Millisecond
 	zoomSteps  = 6
 
-	groupPad    = 14
-	groupLabelH = 22
-	gridStep    = 28
+	groupPad = 14
+	gridStep = 28
 
 	haloW     = 4.5  // the halo under arrows and stems over the desktop
 	haloAlpha = 0xb0 // its alpha, of Background
 )
 
-// spacing is the board's layout spacing: wider than the tree layout it came
-// from, so group frames fit between cards.
-var spacing = layout.Style{RankGap: 72, NodeGap: 44, LaneGap: 16, BandGap: 64, Margin: 48}
+// notesID names the notes panel for hits and fades.
+const notesID = "\x00notes"
 
 // View is the board widget.
 type View struct {
@@ -58,11 +64,15 @@ type View struct {
 
 	doc        *board.Doc
 	dirty      bool
-	pendingNow time.Time // when SetDoc was called: glides start then
-	cards      map[string]*card
-	out        *layout.Output
+	pendingNow time.Time         // when the board was set: glides start then
+	pending    *layout.Placement // the placement given with it (nil: lay out here)
+	reveal     []string          // ids drawn by the change, in order
+	sizer      measure.Sizer
+	cards      map[string]*measure.Card
+	notes      *measure.Notes
+	out        *layout.Placement
 
-	from   map[string]draw.Rect // where each box starts its glide
+	from   map[string]draw.Rect // where each box (and frame) starts its glide
 	moveAt time.Time
 	born   map[string]time.Time
 
@@ -100,26 +110,58 @@ type press struct {
 
 // New returns an empty board view that fits the board as it grows.
 func New() *View {
-	return &View{doc: board.New(), cards: map[string]*card{}, born: map[string]time.Time{}, points: map[string]pointing{}, fitted: true, dirty: true}
+	return &View{doc: board.New(), cards: map[string]*measure.Card{}, born: map[string]time.Time{}, points: map[string]pointing{}, fitted: true, dirty: true}
 }
 
-// SetDoc shows a new state of the board. Boxes that move glide from where
-// they are now.
-func (v *View) SetDoc(d *board.Doc, now time.Time) {
+// SetDoc shows a new state of the board, laid out here. Boxes that move
+// glide from where they are now.
+func (v *View) SetDoc(d *board.Doc, now time.Time) { v.Show(d, nil, nil, now) }
+
+// Show shows a new state of the board at the placement the server sent
+// (nil: lay it out here). Boxes that move glide from where they are now;
+// new ones fade in one after another in the order of reveal (the ids the
+// change drew, in order), the rest of them after.
+func (v *View) Show(d *board.Doc, pl *layout.Placement, reveal []string, now time.Time) {
 	v.doc = d
+	v.pending = pl
+	v.reveal = reveal
 	v.dirty = true
 	v.pendingNow = now
 }
 
 // Reset shows another board in place of this one. Nothing glides from the
 // old board: the camera snaps to fit the new one and its boxes fade in.
-func (v *View) Reset(d *board.Doc, now time.Time) {
-	v.doc = d
-	v.cards, v.out, v.from = map[string]*card{}, nil, nil
+func (v *View) Reset(d *board.Doc, now time.Time) { v.ResetTo(d, nil, now) }
+
+// ResetTo is Reset at the placement the server sent (nil: lay it out here).
+func (v *View) ResetTo(d *board.Doc, pl *layout.Placement, now time.Time) {
+	v.doc, v.pending, v.reveal = d, pl, nil
+	v.out, v.from = nil, nil
 	v.born, v.points = map[string]time.Time{}, map[string]pointing{}
 	v.hover, v.press = "", nil
 	v.fitted, v.cam, v.swapped = true, camMove{}, true
 	v.dirty, v.pendingNow = true, now
+}
+
+// Reveal orders the fade-in of the boxes the newest change drew, ids in
+// the order they were drawn: the ops of a version arrive just after it.
+// Boxes already showing are left as they are.
+func (v *View) Reveal(ids []string, now time.Time) {
+	if v.dirty {
+		v.reveal = ids
+		return
+	}
+	var fresh []string
+	for id, t := range v.born {
+		if !t.Before(v.moveAt) && id != notesID {
+			fresh = append(fresh, id)
+		}
+	}
+	slices.Sort(fresh)
+	slices.SortStableFunc(fresh, func(a, b string) int { return revealRank(ids, a) - revealRank(ids, b) })
+	for i, id := range fresh {
+		v.born[id] = v.moveAt.Add(time.Duration(i) * revealGap)
+	}
 }
 
 // Doc is the board shown.
@@ -132,8 +174,8 @@ func (v *View) Point(ids []string, d time.Duration, now time.Time) {
 	}
 }
 
-// Layout is the current layout (after Measure).
-func (v *View) Layout() *layout.Output { return v.out }
+// Layout is the current placement (after Measure).
+func (v *View) Layout() *layout.Placement { return v.out }
 
 // SetViewport implements ui.ViewportFitter: the board fills its pane.
 func (v *View) SetViewport(h float32) { v.vh = h }
@@ -166,58 +208,71 @@ func (v *View) Measure(c *ui.Ctx, width float32) ui.Size {
 	return v.size
 }
 
-// relayout measures the cards that changed and lays the board out again,
-// starting from the previous layout so as little as possible moves.
+// relayout measures the cards that changed and takes the new placement
+// (or lays the board out, starting from the previous placement so as
+// little as possible moves).
 func (v *View) relayout(c *ui.Ctx) {
 	v.dirty = false
 	now := v.pendingNow
 	if now.IsZero() {
 		now = c.Now
 	}
-	nodes := v.doc.Nodes()
-	cards := make(map[string]*card, len(nodes))
-	var in layout.Input
-	hasIn := map[string]bool{}
-	for _, l := range v.doc.Links() {
-		hasIn[l.To] = true
+	cards := map[string]*measure.Card{}
+	for _, n := range v.doc.Nodes() {
+		if n.On == "" {
+			cards[n.ID] = v.sizer.Measure(n, v.doc.Satellites(n.ID))
+		}
 	}
-	for _, n := range nodes {
-		if n.On != "" {
+	v.notes = nil
+	if lines := v.doc.Notes(); len(lines) > 0 {
+		v.notes = v.sizer.MeasureNotes(lines)
+	}
+	out := v.pending
+	if out == nil {
+		out = layout.Board(v.doc, &v.sizer, v.out)
+	}
+	v.pending = nil
+
+	// Glide from wherever each box is drawn right now; new ones fade in,
+	// in the order they were drawn.
+	from := map[string]draw.Rect{}
+	var fresh []string
+	isNew := func(id string) bool {
+		if v.out == nil {
+			return false
+		}
+		if _, ok := v.out.Boxes[id]; ok {
+			return false
+		}
+		_, ok := v.out.Groups[id]
+		return !ok
+	}
+	for id := range out.Boxes {
+		if v.out != nil && !isNew(id) {
+			from[id] = v.boxAt(id, now)
 			continue
 		}
-		sats := v.doc.Satellites(n.ID)
-		cd := v.cards[n.ID]
-		if cd == nil || cd.key != cardKey(n, sats) {
-			cd = measureCard(c.Text, n, sats)
-		}
-		cards[n.ID] = cd
-		in.Nodes = append(in.Nodes, layout.Node{ID: n.ID, W: cd.w, H: cd.totalH, In: cd.h / 2, Ports: []float32{cd.h / 2}})
-		if !hasIn[n.ID] {
-			in.Roots = append(in.Roots, n.ID)
-		}
-	}
-	for _, l := range v.doc.Links() {
-		in.Edges = append(in.Edges, layout.Edge{From: l.From, Port: 0, To: l.To})
-	}
-	in.Prev = v.out
-	in.Style = spacing
-	out := layout.Layout(in)
-
-	// Glide from wherever each box is drawn right now.
-	from := map[string]draw.Rect{}
-	for id := range out.Boxes {
-		if v.out != nil {
-			if _, ok := v.out.Boxes[id]; ok {
-				from[id] = v.boxAt(id, now)
-				continue
-			}
-		}
 		if v.out != nil || v.swapped { // the first layout shows everything at once; another board fades in
-			v.born[id] = now
+			fresh = append(fresh, id)
 		}
+	}
+	for id := range out.Groups {
+		if v.out != nil && !isNew(id) {
+			from[id] = v.groupAt(id, now)
+		}
+	}
+	if out.Notes != nil && v.out != nil && v.out.Notes != nil {
+		from[notesID] = v.notesAt(now)
+	} else if out.Notes != nil && (v.out != nil || v.swapped) {
+		v.born[notesID] = now
+	}
+	slices.Sort(fresh)
+	slices.SortStableFunc(fresh, func(a, b string) int { return revealRank(v.reveal, a) - revealRank(v.reveal, b) })
+	for i, id := range fresh {
+		v.born[id] = now.Add(time.Duration(i) * revealGap)
 	}
 	for id := range v.born {
-		if _, ok := out.Boxes[id]; !ok {
+		if _, ok := out.Boxes[id]; !ok && id != notesID {
 			delete(v.born, id)
 		}
 	}
@@ -231,20 +286,46 @@ func (v *View) relayout(c *ui.Ctx) {
 	}
 }
 
-// boxAt is where a box is drawn at now: its card only (not the
-// satellites), partway along its glide.
-func (v *View) boxAt(id string, now time.Time) draw.Rect {
-	to := v.out.Boxes[id]
-	cd := v.cards[id]
-	if cd != nil {
-		to.H = cd.h
+// revealRank is where id comes in the reveal order (after it when it
+// isn't in it).
+func revealRank(reveal []string, id string) int {
+	if i := slices.Index(reveal, id); i >= 0 {
+		return i
 	}
+	return len(reveal)
+}
+
+// glide is a rect partway from its glide's start to to.
+func (v *View) glide(id string, to draw.Rect, now time.Time) draw.Rect {
 	f, ok := v.from[id]
 	if !ok {
 		return to
 	}
 	t := ease(progress(now, v.moveAt, moveDur))
 	return draw.Rect{X: lerp(f.X, to.X, t), Y: lerp(f.Y, to.Y, t), W: lerp(f.W, to.W, t), H: lerp(f.H, to.H, t)}
+}
+
+// boxAt is where a box is drawn at now: its card only (not the
+// satellites), partway along its glide.
+func (v *View) boxAt(id string, now time.Time) draw.Rect {
+	to := v.out.Boxes[id].Rect()
+	if cd := v.cards[id]; cd != nil {
+		to.H = cd.H
+	}
+	return v.glide(id, to, now)
+}
+
+// groupAt is where a frame is drawn at now.
+func (v *View) groupAt(id string, now time.Time) draw.Rect {
+	return v.glide(id, v.out.Groups[id].Rect(), now)
+}
+
+// notesAt is where the notes panel is drawn at now.
+func (v *View) notesAt(now time.Time) draw.Rect {
+	if v.out.Notes == nil {
+		return draw.Rect{}
+	}
+	return v.glide(notesID, v.out.Notes.Rect(), now)
 }
 
 // fitTarget is the camera that shows the whole board, centered.
@@ -438,9 +519,10 @@ func (v *View) Draw(c *ui.Ctx, l *draw.List, origin draw.Point, visible draw.Rec
 		if !ok {
 			continue
 		}
-		l.Rect(r, pal.GroupFill, draw.Uniform(cardRadius+4))
-		gl := lay(c.Text, g.Label, style(text.SansSemibold, 12.5), 0)
-		putText(l, gl, r.X+groupPad, r.Y+(groupLabelH-gl.Height)/2+3, pal.TextMuted, textSize)
+		a := v.groupAlpha(g.ID, now)
+		l.Rect(r, fade(pal.GroupFill, a), draw.Uniform(cardRadius+4))
+		gl := lay(measure.Text(), g.Label, style(text.SansSemibold, measure.GroupLabelSize), 0)
+		putText(l, gl, r.X+groupPad, r.Y+(layout.DefaultBoardStyle.GroupLabelH-gl.Height)/2+3, fade(pal.TextMuted, a), textSize)
 		v.drawPointing(l, c, g.ID, r, now)
 		if v.hover == g.ID {
 			l.BorderedRect(r, draw.Color{}, pal.Accent.WithAlpha(0x90), 1.5, draw.Uniform(cardRadius+4))
@@ -448,25 +530,29 @@ func (v *View) Draw(c *ui.Ctx, l *draw.List, origin draw.Point, visible draw.Rec
 	}
 
 	gliding := now.Sub(v.moveAt) < moveDur
-	for i, r := range v.out.Routes {
-		pts := r.Points
-		if gliding || r.Back || r.Cross {
-			a, b := v.boxAt(r.Edge.From, now), v.boxAt(r.Edge.To, now)
+	links := v.doc.Links()
+	for _, r := range v.out.Arrows {
+		pts := r.Points()
+		if gliding {
+			a, b := v.boxAt(r.From, now), v.boxAt(r.To, now)
 			pts = curve(draw.Point{X: a.Right(), Y: a.Y + a.H/2}, draw.Point{X: b.X, Y: b.Y + b.H/2})
 		}
-		alpha := min(v.bornAlpha(r.Edge.From, now), v.bornAlpha(r.Edge.To, now))
+		alpha := min(v.bornAlpha(r.From, now), v.bornAlpha(r.To, now))
 		if halo.A > 0 {
 			l.Path(draw.Path{Points: pts, Stroke: fade(halo, alpha), Width: haloW, ArrowEnd: draw.ArrowTriangle})
 		}
 		l.Path(draw.Path{Points: pts, Stroke: fade(pal.EdgeStroke, alpha), Width: 1.6, ArrowEnd: draw.ArrowTriangle})
-		if lbl := v.linkLabel(i); lbl != "" {
-			v.drawLinkLabel(l, c, lbl, pts, alpha, textSize)
+		if i := slices.IndexFunc(links, func(k board.Link) bool { return k.From == r.From && k.To == r.To }); i >= 0 && links[i].Label != "" {
+			v.drawLinkLabel(l, c, links[i].Label, pts, alpha, textSize)
 		}
 	}
 
 	for _, n := range v.doc.Nodes() {
 		cd := v.cards[n.ID]
 		if cd == nil {
+			continue
+		}
+		if _, ok := v.out.Boxes[n.ID]; !ok {
 			continue
 		}
 		b := v.boxAt(n.ID, now)
@@ -477,23 +563,16 @@ func (v *View) Draw(c *ui.Ctx, l *draw.List, origin draw.Point, visible draw.Rec
 			b = draw.Rect{X: b.X + b.W*(1-k)/2, Y: b.Y + b.H*(1-k)/2, W: b.W * k, H: b.H * k}
 		}
 		v.drawPointing(l, c, n.ID, b, now)
-		cd.draw(l, &pal, n.ID, b, look{alpha: a, hover: v.hover, textSize: textSize, halo: halo})
-		for _, s := range cd.sats {
-			v.drawPointing(l, c, s.id, s.rect(b), now)
+		drawCard(l, &pal, cd, n.ID, b, look{alpha: a, hover: v.hover, textSize: textSize, halo: halo})
+		for _, s := range cd.Sats {
+			v.drawPointing(l, c, s.ID, s.Rect(b), now)
 		}
+	}
+	if v.notes != nil && v.out.Notes != nil {
+		drawNotes(l, &pal, v.notes, v.notesAt(now), v.bornAlpha(notesID, now), textSize)
 	}
 	l.PopTransform()
 	l.PopClip()
-}
-
-// linkLabel is the label of the route at index i (routes follow the
-// links' order).
-func (v *View) linkLabel(i int) string {
-	links := v.doc.Links()
-	if i < len(links) {
-		return links[i].Label
-	}
-	return ""
 }
 
 func (v *View) drawLinkLabel(l *draw.List, c *ui.Ctx, s string, pts []draw.Point, a float32, textSize func(float32) float32) {
@@ -501,7 +580,7 @@ func (v *View) drawLinkLabel(l *draw.List, c *ui.Ctx, s string, pts []draw.Point
 		return
 	}
 	mid := pts[len(pts)/2]
-	tl := lay(c.Text, s, style(text.SansRegular, 11.5), 0)
+	tl := lay(measure.Text(), s, style(text.SansRegular, 11.5), 0)
 	r := draw.Rect{X: mid.X - tl.Width/2 - 6, Y: mid.Y - tl.Height/2 - 2, W: tl.Width + 12, H: tl.Height + 4}
 	l.BorderedRect(r, fade(c.Pal.Surface, a), fade(c.Pal.Border, a), 1, draw.Uniform(r.H/2))
 	putText(l, tl, r.X+6, r.Y+2, fade(c.Pal.TextMuted, a), textSize)
@@ -547,27 +626,24 @@ func (v *View) bornAlpha(id string, now time.Time) float32 {
 	return ease(progress(now, t, bornDur))
 }
 
-// groupRect is a frame around its members' cards and satellites.
+// groupRect is a frame's rect at now.
 func (v *View) groupRect(id string, now time.Time) (draw.Rect, bool) {
-	var r draw.Rect
-	found := false
-	for _, n := range v.doc.Members(id) {
-		cd := v.cards[n.ID]
-		if cd == nil {
-			continue
-		}
-		b := v.boxAt(n.ID, now)
-		b.H = cd.totalH * b.H / cd.h
-		if !found {
-			r, found = b, true
-			continue
-		}
-		r = union(r, b)
-	}
-	if !found {
+	if v.out == nil {
 		return draw.Rect{}, false
 	}
-	return draw.Rect{X: r.X - groupPad, Y: r.Y - groupPad - groupLabelH, W: r.W + 2*groupPad, H: r.H + 2*groupPad + groupLabelH}, true
+	if _, ok := v.out.Groups[id]; !ok {
+		return draw.Rect{}, false
+	}
+	return v.groupAt(id, now), true
+}
+
+// groupAlpha fades a new frame in with its first card.
+func (v *View) groupAlpha(id string, now time.Time) float32 {
+	a := float32(1)
+	for _, n := range v.doc.Members(id) {
+		a = min(a, v.bornAlpha(n.ID, now))
+	}
+	return a
 }
 
 // drawGrid draws the faint dot grid of a whiteboard, moving with the
@@ -601,10 +677,13 @@ func (v *View) Hit(c *ui.Ctx, p draw.Point) (ui.Part, bool) {
 		if cd == nil {
 			continue
 		}
+		if _, ok := v.out.Boxes[n.ID]; !ok {
+			continue
+		}
 		b := v.boxAt(n.ID, now)
-		for _, s := range cd.sats {
-			if s.rect(b).Contains(q) {
-				return ui.Part{Kind: ui.PartNode, ID: s.id}, true
+		for _, s := range cd.Sats {
+			if s.Rect(b).Contains(q) {
+				return ui.Part{Kind: ui.PartNode, ID: s.ID}, true
 			}
 		}
 		if b.Contains(q) {
@@ -632,12 +711,15 @@ func (v *View) Locate(c *ui.Ctx, part ui.Part) (draw.Rect, bool) {
 		if cd == nil {
 			return draw.Rect{}, false
 		}
-		i := slices.IndexFunc(cd.sats, func(s *sat) bool { return s.id == n.ID })
+		i := slices.IndexFunc(cd.Sats, func(s *measure.Sat) bool { return s.ID == n.ID })
 		if i < 0 {
 			return draw.Rect{}, false
 		}
-		r = cd.sats[i].rect(v.boxAt(n.On, now))
+		r = cd.Sats[i].Rect(v.boxAt(n.On, now))
 	case n != nil:
+		if _, ok := v.out.Boxes[n.ID]; !ok {
+			return draw.Rect{}, false
+		}
 		r = v.boxAt(n.ID, now)
 	default:
 		g, ok := v.groupRect(part.ID, now)

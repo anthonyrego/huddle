@@ -29,6 +29,9 @@ func (s *Shaper) covers(id draw.FontID, r rune) bool {
 // when it does. An ASCII span costs one pass over its runes; otherwise it is
 // a cmap lookup per non-ASCII rune while the span's face covers them.
 func (s *Shaper) assignFonts(para []rune, sp span, cjkReady *bool) bool {
+	if s.embeddedOnly {
+		return false
+	}
 	ascii := true
 	for _, r := range para[sp.start:sp.end] {
 		if r >= 0x80 {

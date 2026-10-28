@@ -1,0 +1,15 @@
+# Continuity over an hour: twelve rounds about five minutes apart, each
+# adding a line to the notes, across the realtime model's reconnects and
+# new transcription sessions. The last question needs the whole hour.
+@voice Sam Samantha
+@voice Kim Karen
+Sam [command]: Whiteboard, draw a box called project kickoff.
+@pause 5
+@repeat 12
+Kim: Round {n} of the check in. Things are moving along.
+Sam: Nothing new from me this round.
+Kim [command]: Whiteboard, add a line to the notes: round {n} done.
+@pause 285
+@end
+Sam [question]: Whiteboard, which round did we note first, and how many rounds are noted?
+@pause 8

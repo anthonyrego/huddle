@@ -168,7 +168,7 @@ func TestToolsDeclareEveryOp(t *testing.T) {
 			t.Errorf("%s has no description", f.Name)
 		}
 	}
-	for _, n := range []string{AddNode, Connect, Frame, Annotate, Rename, Remove, PointAt, GetBoard} {
+	for _, n := range []string{AddNode, Connect, Frame, Annotate, Rename, Remove, PointAt, GetBoard, Sort, Notes, Undo, RevertTo, Speak, Transcript, Auto} {
 		if !names[n] {
 			t.Errorf("no tool for %s", n)
 		}
@@ -193,5 +193,97 @@ func TestToolsOfferOnlyCurrentKinds(t *testing.T) {
 		if slices.Contains(Kinds, k) {
 			t.Errorf("%s is both offered and retired", k)
 		}
+	}
+}
+
+func TestOrderNotesAndCanonicalOps(t *testing.T) {
+	d := New()
+	for _, op := range []Op{
+		{Name: Frame, ID: "fruit", Label: "Fruit"},
+		{Name: AddNode, ID: "pear", Kind: Idea, Label: "Pear", Group: "fruit"},
+		{Name: AddNode, ID: "apple", Kind: Idea, Label: "apple", Group: "fruit"},
+		{Name: AddNode, ID: "cheap", Kind: Pro, Label: "Cheap", On: "apple"},
+		{Name: AddNode, ID: "fig", Kind: Idea, Label: "Fig", Group: "fruit"},
+		{Name: Connect, From: "pear", To: "fig", Label: "then"},
+		{Name: Annotate, Target: "pear", Text: "ripe"},
+		{Name: Sort, Group: "fruit", By: "alphabetical"},
+		{Name: Sort, By: ByCustom, IDs: []string{"fig", "pear"}},
+		{Name: Notes, Lines: []string{"- Decided: pears", "  "}},
+		{Name: Notes, Lines: []string{"Sam: buy figs"}},
+	} {
+		op.normalize()
+		if err := d.Apply(op); err != nil {
+			t.Fatalf("%s: %v", op.Name, err)
+		}
+	}
+	if got := d.Notes(); !slices.Equal(got, []string{"Decided: pears", "Sam: buy figs"}) {
+		t.Fatalf("notes = %q", got)
+	}
+	cmp := d.Compare("fruit")
+	ids := []string{"pear", "fig", "apple"}
+	slices.SortFunc(ids, cmp)
+	if !slices.Equal(ids, []string{"apple", "fig", "pear"}) {
+		t.Fatalf("alpha = %v", ids)
+	}
+	ids = []string{"apple", "pear", "fig"}
+	slices.SortFunc(ids, d.Compare(""))
+	if !slices.Equal(ids, []string{"fig", "pear", "apple"}) {
+		t.Fatalf("custom = %v", ids)
+	}
+	if d.Compare("nothing") != nil {
+		t.Fatal("an unsorted target has a comparison")
+	}
+
+	// The canonical ops rebuild the same board.
+	again, errs := Replay(d.Ops())
+	if len(errs) > 0 {
+		t.Fatalf("replay: %v", errs)
+	}
+	if a, b := d.Digest(), again.Digest(); a != b {
+		t.Fatalf("digest changed:\n%s\n---\n%s", a, b)
+	}
+
+	if err := d.Apply(Op{Name: Sort, Group: "nope", By: ByAlpha}); err == nil {
+		t.Fatal("sorting a missing group went through")
+	}
+	if err := d.Apply(Op{Name: Sort, By: "sideways"}); err == nil {
+		t.Fatal("an unknown sort went through")
+	}
+	if err := d.Apply(Op{Name: Undo}); err == nil {
+		t.Fatal("undo applied to a doc")
+	}
+	if err := d.Apply(Op{Name: Notes, Replace: true}); err != nil || len(d.Notes()) != 0 {
+		t.Fatalf("clearing notes: %v, %q", err, d.Notes())
+	}
+	if err := d.Apply(Op{Name: Sort, Group: "fruit", By: "none"}); err != nil || d.Compare("fruit") != nil {
+		t.Fatalf("unsorting: %v", err)
+	}
+}
+
+func TestOpKinds(t *testing.T) {
+	for _, n := range []string{PointAt, GetBoard, Undo, RevertTo, Speak, Transcript, Auto} {
+		if (Op{Name: n}).Changes() {
+			t.Errorf("%s changes the board", n)
+		}
+	}
+	for _, n := range []string{AddNode, Sort, Notes} {
+		if !(Op{Name: n}).Changes() {
+			t.Errorf("%s doesn't change the board", n)
+		}
+	}
+	if !(Op{Name: Undo}).Versioned() || (Op{Name: AddNode}).Versioned() {
+		t.Error("Versioned is wrong")
+	}
+	op, err := Decode(Notes, map[string]any{"lines": "Ship it"})
+	if err != nil || !slices.Equal(op.Lines, []string{"Ship it"}) {
+		t.Fatalf("lines as a string: %+v, %v", op, err)
+	}
+	op, err = Decode(RevertTo, map[string]any{"version": float64(3)})
+	if err != nil || op.Version != 3 {
+		t.Fatalf("revert_to: %+v, %v", op, err)
+	}
+	op, _ = Decode(Sort, map[string]any{"group": "board", "by": "Chronological"})
+	if op.Group != "" || op.By != ByChrono {
+		t.Fatalf("order: %+v", op)
 	}
 }

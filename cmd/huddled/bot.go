@@ -10,13 +10,10 @@ package main
 //   - play is a fixture participant: it plays an Ogg/Opus file, looping.
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -25,15 +22,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kazzmir/opus-go/ogg"
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
-	"github.com/pion/webrtc/v4/pkg/media"
 
-	"github.com/anthonyrego/huddle/internal/opus"
-	"github.com/anthonyrego/huddle/internal/pcm"
+	"github.com/anthonyrego/huddle/internal/fixturemeet"
 	"github.com/anthonyrego/huddle/internal/rtc/lkrtc"
 	"github.com/anthonyrego/huddle/internal/server/httpapi"
 	"github.com/anthonyrego/huddle/internal/server/lktoken"
@@ -45,8 +39,6 @@ func init() {
 
 // botSuffix ends every bot's identity, so bots don't echo bots.
 const botSuffix = "-bot"
-
-var opusCap = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2, SDPFmtpLine: "minptime=10;useinbandfec=1;usedtx=1"}
 
 func runBot(args []string) error {
 	if len(args) == 0 || (args[0] != "echo" && args[0] != "play") {
@@ -126,7 +118,7 @@ func (e *echo) subscribed(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPubli
 	if !strings.EqualFold(track.Codec().MimeType, webrtc.MimeTypeOpus) {
 		return
 	}
-	lt, err := lksdk.NewLocalTrack(opusCap)
+	lt, err := lksdk.NewLocalTrack(fixturemeet.OpusCap)
 	if err != nil {
 		slog.Error("bot: echo track", "err", err)
 		return
@@ -186,7 +178,7 @@ func (e *echo) unsubscribed(_ *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublica
 // runPlay plays an Ogg/Opus file as a participant's mic, in real time,
 // with each packet's RFC 6464 level.
 func runPlay(ctx context.Context, url, tok, path string, loop bool) error {
-	pkts, levels, err := readOggOpus(path)
+	t, err := fixturemeet.ReadTrack(path)
 	if err != nil {
 		return err
 	}
@@ -195,75 +187,16 @@ func runPlay(ctx context.Context, url, tok, path string, loop bool) error {
 		return err
 	}
 	defer lk.Disconnect()
-	lt, err := lksdk.NewLocalSampleTrack(opusCap)
+	lt, err := lksdk.NewLocalSampleTrack(fixturemeet.OpusCap)
 	if err != nil {
 		return err
 	}
 	if _, err := lk.LocalParticipant.PublishTrack(lt, &lksdk.TrackPublicationOptions{Name: "microphone", Source: livekit.TrackSource_MICROPHONE}); err != nil {
 		return err
 	}
-	slog.Info("bot: playing", "room", lk.Name(), "file", path, "packets", len(pkts), "loop", loop)
-	ts := rand.Uint32() | 1
-	start, elapsed := time.Now(), time.Duration(0)
-	for i := 0; ; i++ {
-		if i == len(pkts) {
-			if !loop {
-				return nil
-			}
-			i = 0
-		}
-		n := opus.PacketSamples(pkts[i])
-		if n == 0 {
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(time.Until(start.Add(elapsed))):
-		}
-		lvl := levels[i]
-		lt.WriteSample(media.Sample{Data: pkts[i], Duration: time.Duration(n) * time.Second / 48000, PacketTimestamp: ts}, &lksdk.SampleWriteOptions{AudioLevel: &lvl})
-		ts += uint32(n)
-		elapsed += time.Duration(n) * time.Second / 48000
+	slog.Info("bot: playing", "room", lk.Name(), "file", path, "packets", t.Packets(), "loop", loop)
+	if err := t.Play(ctx, lt, time.Now(), loop); err != nil && ctx.Err() == nil {
+		return err
 	}
-}
-
-// readOggOpus reads every audio packet of a mono Ogg/Opus file, with each
-// one's RFC 6464 level (decoded once, here).
-func readOggOpus(path string) ([][]byte, []uint8, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	r, err := ogg.NewOpusReader(bytes.NewReader(b))
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", path, err)
-	}
-	if r.Head.Channels != 1 {
-		return nil, nil, fmt.Errorf("%s has %d channels, want 1", path, r.Head.Channels)
-	}
-	dec, err := opus.NewDecoder()
-	if err != nil {
-		return nil, nil, err
-	}
-	defer dec.Close()
-	var pkts [][]byte
-	var levels []uint8
-	out := make([]float32, 6*opus.FrameSamples)
-	for {
-		p, err := r.ReadAudioPacket()
-		if err != nil {
-			break
-		}
-		n, err := dec.Decode(p.Data, out)
-		if err != nil {
-			continue
-		}
-		pkts = append(pkts, p.Data)
-		levels = append(levels, uint8(min(max(-pcm.LevelF32(out[:n]), 0), 127)))
-	}
-	if len(pkts) == 0 {
-		return nil, nil, fmt.Errorf("%s has no Opus packets", path)
-	}
-	return pkts, levels, nil
+	return nil
 }

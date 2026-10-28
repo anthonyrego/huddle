@@ -29,7 +29,7 @@ ROOM ?= test
 GO = CGO_ENABLED=0 go
 
 .PHONY: build app run render test test-db vet shaders shaders-check nocgo check bot voice-check \
-	dev-up dev-down livekit server notarize lan-ip
+	dev-up dev-down livekit server notarize lan-ip live-probe fixtures agent-check meet
 
 build:
 	$(GO) build -o build/huddle ./cmd/huddle
@@ -39,8 +39,8 @@ build:
 app: build
 	@SIGN="$(SIGN)" ./scripts/make-app.sh build/huddle build/Huddle.app
 
-# The meeting window in ROOM on SERVER (user only: it will open the mic once
-# voice lands). Flags via ARGS, e.g. make run ARGS="-theme dark".
+# The meeting window in ROOM on SERVER (user only: it opens the mic; -no-voice
+# keeps it shut). Flags via ARGS, e.g. make run ARGS="-theme dark".
 run: app
 	open -n --env HUDDLE_DATA_DIR="$(HUDDLE_DATA_DIR)" build/Huddle.app --args app -server "$(SERVER)" -room "$(ROOM)" $(ARGS)
 
@@ -115,3 +115,25 @@ bot: build
 # click latency, and speech at 0, 5 and 10% loss with 40 ms jitter, WAVs in .dev/out.
 voice-check: build
 	./build/huddle voice-check -server "$(SERVER)" $(ARGS)
+
+# Asks the realtime and transcription models what the whiteboard relies on
+# (a few cents). ARGS="-only brain" or "-only transcribe".
+live-probe: build
+	@$(KEY) ./build/huddled live-probe $(ARGS)
+
+# Renders the fixture meetings (testdata/meetings/*.txt) with macOS voices
+# into per-speaker Ogg Opus (git ignores the audio).
+fixtures: build
+	./build/huddled fixtures
+
+# Scores the whiteboard on a fixture meeting against the local stack, e.g.
+# make agent-check MEETING=review [ARGS="-voice answers"]
+MEETING ?= review
+agent-check: build
+	@DATABASE_URL="$(DATABASE_URL)" LIVEKIT_URL="$(LIVEKIT_URL)" LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret \
+		$(KEY) ./build/huddled agent-check -meeting testdata/meetings/$(MEETING).txt $(ARGS)
+
+# Dev: fixture bots join ROOM on SERVER and play MEETING (make fixtures
+# first), for watching the whiteboard in the app.
+meet: build
+	./build/huddled meet -server "$(SERVER)" -room "$(ROOM)" -meeting testdata/meetings/$(MEETING).txt

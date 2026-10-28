@@ -264,3 +264,15 @@ func pace(ctx context.Context, next *time.Time, frame []float32, silence bool) e
 	}
 	return nil
 }
+
+// Latency is how long after a frame is written it's heard: what the
+// player has queued plus the output's own delay (the room holds video
+// frames against it, for lip sync).
+func (s *liveSpeaker) Latency() time.Duration {
+	dev := s.c.current()
+	if dev == nil {
+		return 0
+	}
+	i := dev.Info()
+	return i.Latency + i.Queued
+}

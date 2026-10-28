@@ -48,7 +48,20 @@ func (a *Agent) join(ctx context.Context) (*lkRoom, error) {
 		r.set(rp.Identity(), true)
 		go a.listen(ctx, track, rp.Identity(), a.name(rp.Identity()))
 	}
-	room, err := lksdk.ConnectToRoomWithToken(a.cfg.LiveKitURL, tok, cb, lksdk.WithAutoSubscribe(true))
+	// Audio only: the whiteboard never shows video, so it subscribes to
+	// each audio track as it's published (the ones there at join come the
+	// same way) and the SFU never sends it a camera or a screen.
+	cb.OnTrackPublished = func(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+		if pub.Kind() != lksdk.TrackKindAudio || rp.Kind() == lksdk.ParticipantAgent {
+			return
+		}
+		go func() {
+			if err := pub.SetSubscribed(true); err != nil {
+				a.log.Warn("agent: subscribe", "identity", rp.Identity(), "err", err)
+			}
+		}()
+	}
+	room, err := lksdk.ConnectToRoomWithToken(a.cfg.LiveKitURL, tok, cb, lksdk.WithAutoSubscribe(false))
 	if err != nil {
 		return nil, fmt.Errorf("agent: join LiveKit: %w", err)
 	}

@@ -66,6 +66,7 @@ var cf struct {
 var cv struct {
 	create        func(alloc uintptr, w, h int, format uint32, attrs uintptr, out *uintptr) int32
 	poolCreateBuf func(alloc, pool uintptr, out *uintptr) int32
+	poolCreate    func(alloc, poolAttrs, bufAttrs uintptr, out *uintptr) int32
 	width         func(uintptr) int
 	height        func(uintptr) int
 	format        func(uintptr) uint32
@@ -124,6 +125,7 @@ var funcs = []struct {
 
 	{coreVideoPath, "CVPixelBufferCreate", &cv.create},
 	{coreVideoPath, "CVPixelBufferPoolCreatePixelBuffer", &cv.poolCreateBuf},
+	{coreVideoPath, "CVPixelBufferPoolCreate", &cv.poolCreate},
 	{coreVideoPath, "CVPixelBufferGetWidth", &cv.width},
 	{coreVideoPath, "CVPixelBufferGetHeight", &cv.height},
 	{coreVideoPath, "CVPixelBufferGetPixelFormatType", &cv.format},

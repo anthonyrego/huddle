@@ -89,6 +89,10 @@ func newTextPipeline() (*text.Shaper, *text.GlyphCache, error) {
 	return shaper, text.NewGlyphCache(rast), nil
 }
 
+// renderCamErr is the camera error a render shows unless -cam-err gives
+// one: the longest the app says (no permission).
+var renderCamErr = errors.New("Allow in System Settings › Privacy & Security › Camera")
+
 func runRender(args []string) error {
 	fs := flag.NewFlagSet("render", flag.ContinueOnError)
 	fixture := fs.String("fixture", "", "ops file to put on the board (one JSON op per line)")
@@ -191,7 +195,7 @@ func runRender(args []string) error {
 			s.call.prefs = devicePrefs{Speakers: "monitor", EchoOff: *echoOff, Camera: vf.pickCam}
 			var camErr error
 			if vf.noCams {
-				camErr = errVideoNotYet
+				camErr = renderCamErr
 			}
 			s.openMenu(renderDevices, nil, renderCameras, camErr)
 			s.menu.hover = 3
@@ -358,7 +362,7 @@ func (vf *videoFlags) apply(s *meetingScene) ([]*fakeTrack, error) {
 	if vf.badge {
 		s.boardSeen = s.st.seq - 1
 	}
-	errText := errVideoNotYet.Error()
+	errText := renderCamErr.Error()
 	switch vf.camera {
 	case "":
 	case "on":

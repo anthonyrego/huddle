@@ -2,12 +2,18 @@ package main
 
 // The call's video, between the pipeline and the window. Stage 2 builds it
 // in two tracks that meet here: Track P (capture, encoding, the room's
-// video, this file's bodies) and Track U (the tiles and the stage, which
-// read videoState and call setCamera, setShare and cameras). Until Track
-// P lands, the camera and the share say they aren't built yet.
+// video: this file and video_darwin.go) and Track U (the tiles and the
+// stage, which read videoState and call setCamera, setShare and cameras).
+//
+// The camera and the share are opened on their own goroutines (opening a
+// camera takes about a second); what they show is published into the
+// room the call is in, and again into the next one when voice reconnects.
+// Remote cameras and screens arrive through the room's events into
+// videoState.tracks.
 
 import (
 	"errors"
+	"log/slog"
 	"slices"
 
 	"github.com/anthonyrego/huddle/internal/rtc"
@@ -22,6 +28,12 @@ type videoState struct {
 	sharing bool             // you're sharing a screen or window
 	camErr  string           // why the camera isn't on (no permission, none plugged in)
 	shareEr string           // why the share stopped or didn't start
+
+	// The pipeline behind them (video_darwin.go), not for the window.
+	cam, share *localVideo
+	camGen     int // counts setCamera calls: an open that was turned off meanwhile closes itself
+	shareGen   int
+	roomGen    int // counts rooms: a room's late events after hang-up are dropped
 }
 
 // cameraDevice is a camera the device menu lists.
@@ -31,7 +43,7 @@ type cameraDevice struct {
 	Default   bool
 }
 
-var errVideoNotYet = errors.New("video isn't built yet")
+var errNoVideo = errors.New("video is off (-no-video)")
 
 // videoSnapshot is the video state for one frame.
 func (c *call) videoSnapshot() videoState {
@@ -42,11 +54,57 @@ func (c *call) videoSnapshot() videoState {
 	return v
 }
 
-// setCamera turns your camera on or off.
-func (c *call) setCamera(on bool) error { return errVideoNotYet }
+// videoEvents are the room's video events for the call in room number gen.
+func (c *call) videoEvents(ev *rtc.Events, gen int) {
+	ev.VideoAdded = func(t rtc.VideoTrack) {
+		c.mu.Lock()
+		if c.vid.roomGen == gen {
+			c.vid.tracks = append(c.vid.tracks, t)
+		}
+		c.mu.Unlock()
+		slog.Info("video: track added", "identity", t.Identity(), "kind", t.Kind())
+		c.wakeUp()
+	}
+	ev.VideoRemoved = func(t rtc.VideoTrack) {
+		c.mu.Lock()
+		c.vid.tracks = slices.DeleteFunc(c.vid.tracks, func(u rtc.VideoTrack) bool { return u == t })
+		c.mu.Unlock()
+		slog.Info("video: track removed", "identity", t.Identity(), "kind", t.Kind())
+		c.wakeUp()
+	}
+}
 
-// setShare starts sharing (the system picker chooses what) or stops.
-func (c *call) setShare(on bool) error { return errVideoNotYet }
+// publishVideo puts the camera and the share, if on, into a room just
+// joined.
+func (c *call) publishVideo(room rtc.Room) {
+	c.mu.Lock()
+	vs := []*localVideo{c.vid.cam, c.vid.share}
+	c.mu.Unlock()
+	for _, v := range vs {
+		if v != nil {
+			v.publish(room)
+		}
+	}
+}
 
-// cameras lists the cameras without opening any.
-func cameras() ([]cameraDevice, error) { return nil, errVideoNotYet }
+// leftVideo is the call hanging up: the room's tracks and publications
+// went with it.
+func (c *call) leftVideo() {
+	c.mu.Lock()
+	c.vid.roomGen++
+	c.vid.tracks = nil
+	vs := []*localVideo{c.vid.cam, c.vid.share}
+	c.mu.Unlock()
+	for _, v := range vs {
+		if v != nil {
+			v.unpublished()
+		}
+	}
+	c.wakeUp()
+}
+
+func (c *call) wakeUp() {
+	if c.wake != nil {
+		c.wake()
+	}
+}

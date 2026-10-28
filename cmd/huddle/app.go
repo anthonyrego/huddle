@@ -74,6 +74,8 @@ func runApp(args []string) error {
 	size := fs.String("size", "1200x800", "window size in points, WxH")
 	themeMode := fs.String("theme", "", "the window's theme, light|dark (default: the system's)")
 	noVoice := fs.Bool("no-voice", false, "join the room's audio without the mic: listen through the speakers only (agents' runs)")
+	noVideo := fs.Bool("no-video", false, "never open the camera or share the screen; others' videos still show (agents' runs)")
+	fakeCamera := fs.Bool("fake-camera", false, "the camera and the share send the test pattern instead (no camera, no picker)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -156,6 +158,11 @@ func runApp(args []string) error {
 			}
 		}
 		cl := newCall(*noVoice, paths.Data, mt.wake)
+		cl.noVideo, cl.fakeCamera = *noVideo, *fakeCamera
+		defer cl.closeVideo()
+		if !*noVideo {
+			warmVideo()
+		}
 		c.onJoin, cl.rejoin = cl.onJoin, c.rejoin
 		a.scene.call = cl
 		callDone := make(chan struct{})

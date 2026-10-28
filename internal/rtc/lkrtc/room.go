@@ -22,6 +22,7 @@ import (
 	protoLogger "github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/interceptor"
+	"github.com/pion/interceptor/pkg/twcc"
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
@@ -32,6 +33,7 @@ import (
 	"github.com/anthonyrego/huddle/internal/pcm"
 	"github.com/anthonyrego/huddle/internal/playout"
 	"github.com/anthonyrego/huddle/internal/rtc"
+	"github.com/anthonyrego/huddle/internal/video"
 )
 
 // Connector joins LiveKit rooms. The zero value is the voice's defaults.
@@ -51,6 +53,16 @@ type Connector struct {
 	// NewDecoder makes a decoder for each remote video track (the app's
 	// platform one); without it, video tracks aren't played.
 	NewDecoder func() (rtc.VideoDecoder, error)
+	// Uplink, when set, narrows what this side sends to that many bits a
+	// second, with a 50-packet queue in front (a test of congestion
+	// control: huddle video -uplink).
+	Uplink int
+	// SendOnly subscribes to nothing (bots that only publish).
+	SendOnly bool
+	// VideoFrame, when set, is told of every remote video frame as it is
+	// shown, on the track's goroutine (a measuring hook: huddle video).
+	// It must not keep the frame.
+	VideoFrame func(t rtc.VideoTrack, f video.Frame, info VideoFrameInfo)
 }
 
 // NewSim is a Connector.Sim with fixed settings and a fresh seed per stream.
@@ -84,7 +96,8 @@ func (l levelAtLeast) Enabled(ctx context.Context, lv slog.Level) bool {
 // Connect joins the room the token is for.
 func (c *Connector) Connect(ctx context.Context, j rtc.Join, ev rtc.Events) (rtc.Room, error) {
 	sdkLogs()
-	r := &room{cfg: c, ev: ev, mix: playout.New(), tracks: map[string]*remote{}, sfuLevel: map[string]float32{}, quit: make(chan struct{})}
+	r := &room{cfg: c, ev: ev, mix: playout.New(), tracks: map[string]*remote{}, videos: map[string]*videoTrack{}, sfuLevel: map[string]float32{}, quit: make(chan struct{})}
+	r.cc = newVideoCC(r)
 	r.ctx, r.cancel = context.WithCancel(context.Background())
 	cb := &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
@@ -134,12 +147,31 @@ func (c *Connector) Connect(ctx context.Context, j rtc.Join, ev rtc.Events) (rtc
 			}
 		},
 	}
-	opts := []lksdk.ConnectOption{lksdk.WithAutoSubscribe(true)}
+	// Our interceptors, nearest the network first: the receive side's
+	// simulated network; the test uplink; congestion control (GCC and the
+	// pacer) and the transport-wide sequence numbers its feedback needs,
+	// which lksdk doesn't add for what it sends. lksdk's own (NACK, RTCP
+	// reports, receive-side TWCC) come after.
+	var ics []interceptor.Factory
 	if c.Sim != nil {
-		opts = append(opts,
-			lksdk.WithInterceptors([]interceptor.Factory{simFactory{c.Sim}}),
-			lksdk.WithIncludeDefaultInterceptors(true))
+		ics = append(ics, simFactory{c.Sim})
 	}
+	if c.Uplink > 0 {
+		ics = append(ics, &uplinkFactory{bps: c.Uplink, slots: uplinkSlots, made: r.cc.addUplink})
+	}
+	ccf, err := newCC(r.cc.found)
+	if err != nil {
+		r.cancel()
+		return nil, err
+	}
+	twccHdr, err := twcc.NewHeaderExtensionInterceptor()
+	if err != nil {
+		r.cancel()
+		return nil, err
+	}
+	ics = append(ics, ccf, twccHdr)
+	opts := []lksdk.ConnectOption{lksdk.WithAutoSubscribe(!c.SendOnly),
+		lksdk.WithInterceptors(ics), lksdk.WithIncludeDefaultInterceptors(true)}
 	r.lk = lksdk.NewRoom(cb)
 	if err := r.lk.JoinWithContextAndToken(ctx, j.URL, j.Token, opts...); err != nil {
 		r.cancel()
@@ -182,8 +214,12 @@ type room struct {
 	left   atomic.Bool
 	once   sync.Once
 
+	cc *videoCC
+
 	mu       sync.Mutex
-	tracks   map[string]*remote // by track SID
+	tracks   map[string]*remote     // by track SID
+	videos   map[string]*videoTrack // by track SID
+	spk      rtc.Speaker
 	pub      *lksdk.LocalTrackPublication
 	sfuLevel map[string]float32 // the loudest the SFU has said each speaker was, 0–1
 
@@ -198,9 +234,14 @@ type remote struct {
 	arrival  func(identity string, seq uint16, ts uint32, size int, at time.Time)
 	buf      *jitter.Buffer
 	levelExt atomic.Int32 // the last RFC 6464 level the packets carried, -1 none
+	sr       srClock      // its sender reports, for lip sync
 }
 
 func (r *room) subscribed(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+	if track.Kind() == webrtc.RTPCodecTypeVideo {
+		r.subscribedVideo(track, pub, rp)
+		return
+	}
 	if track.Kind() != webrtc.RTPCodecTypeAudio {
 		return
 	}
@@ -215,6 +256,7 @@ func (r *room) subscribed(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPubli
 	}
 	t := &remote{sid: pub.SID(), who: rp.Identity(), buf: jitter.New(dec, r.cfg.Jitter), arrival: r.cfg.Arrival}
 	t.levelExt.Store(-1)
+	pub.OnRTCP(t.sr.read)
 	r.mu.Lock()
 	r.tracks[t.sid] = t
 	r.mu.Unlock()
@@ -250,6 +292,10 @@ func (t *remote) read(track *webrtc.TrackRemote, ext int) {
 }
 
 func (r *room) unsubscribed(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+	if track.Kind() == webrtc.RTPCodecTypeVideo {
+		r.unsubscribedVideo(pub)
+		return
+	}
 	r.mu.Lock()
 	t := r.tracks[pub.SID()]
 	delete(r.tracks, pub.SID())
@@ -367,6 +413,9 @@ func (r *room) Play(spk rtc.Speaker) error {
 	if r.playing.Swap(true) {
 		return errors.New("already playing")
 	}
+	r.mu.Lock()
+	r.spk = spk
+	r.mu.Unlock()
 	go func() {
 		if err := playout.Play(r.ctx, r.mix, spk); err != nil {
 			slog.Error("voice: the speakers stopped", "err", err)
@@ -447,7 +496,20 @@ func (r *room) logStats(every time.Duration) {
 		for _, t := range ts {
 			r.logTrack(t)
 		}
+		for _, v := range r.videoList() {
+			v.logStats()
+		}
 	}
+}
+
+func (r *room) videoList() []*videoTrack {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	vs := make([]*videoTrack, 0, len(r.videos))
+	for _, v := range r.videos {
+		vs = append(vs, v)
+	}
+	return vs
 }
 
 func (r *room) logTrack(t *remote) {
@@ -482,6 +544,13 @@ func TrackStats(rm rtc.Room) map[string]jitter.Stats {
 func (r *room) Leave() {
 	r.once.Do(func() {
 		r.left.Store(true)
+		r.cc.mu.Lock()
+		pubs := append([]*videoPub(nil), r.cc.pubs...)
+		r.cc.mu.Unlock()
+		for _, p := range pubs {
+			p.Stop()
+		}
+		r.cc.stop()
 		close(r.quit)
 		r.cancel()
 		r.mu.Lock()
@@ -493,15 +562,10 @@ func (r *room) Leave() {
 		for _, t := range ts {
 			r.logTrack(t)
 		}
+		for _, v := range r.videoList() {
+			v.logStats()
+		}
 		r.lk.Disconnect()
 		slog.Info("voice: left the room")
 	})
-}
-
-// errNoVideo is PublishVideo's answer until stage 2's pipeline lands.
-var errNoVideo = errors.New("video: not built yet")
-
-// PublishVideo sends a camera or a screen.
-func (r *room) PublishVideo(src rtc.VideoSource, kind rtc.VideoKind) (rtc.VideoPub, error) {
-	return nil, errNoVideo
 }

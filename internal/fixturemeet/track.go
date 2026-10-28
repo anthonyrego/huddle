@@ -9,16 +9,16 @@ import (
 	"time"
 
 	"github.com/kazzmir/opus-go/ogg"
-	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/pion/webrtc/v4"
-	"github.com/pion/webrtc/v4/pkg/media"
 
 	"github.com/anthonyrego/huddle/internal/opus"
 	"github.com/anthonyrego/huddle/internal/pcm"
 )
 
-// OpusCap is the mic track a bot publishes: Opus as the app sends it.
-var OpusCap = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2, SDPFmtpLine: "minptime=10;useinbandfec=1;usedtx=1"}
+// FrameWriter sends a voice: one Opus packet at an RTP timestamp, with its
+// RFC 6464 level (-dBov) when level is set. sfuclient's Track is one.
+type FrameWriter interface {
+	WriteFrame(frame []byte, ts uint32, level *uint8) error
+}
 
 // Track is a mono Ogg/Opus file's packets, each with its RFC 6464 level
 // (decoded once, when read), ready to play as a participant's mic.
@@ -68,10 +68,10 @@ func ReadTrack(path string) (*Track, error) {
 // Packets is how many packets the track holds.
 func (t *Track) Packets() int { return len(t.pkts) }
 
-// Play writes the track to lt in real time from t0, each packet with its
-// length, RTP timestamp and level, until it ends (or, with loop, forever)
-// or ctx does.
-func (t *Track) Play(ctx context.Context, lt *lksdk.LocalSampleTrack, t0 time.Time, loop bool) error {
+// Play writes the track to w in real time from t0, each packet at its RTP
+// timestamp with its level, until it ends (or, with loop, forever) or ctx
+// does.
+func (t *Track) Play(ctx context.Context, w FrameWriter, t0 time.Time, loop bool) error {
 	ts := rand.Uint32() | 1
 	var elapsed time.Duration
 	for i := 0; ; i++ {
@@ -89,7 +89,7 @@ func (t *Track) Play(ctx context.Context, lt *lksdk.LocalSampleTrack, t0 time.Ti
 		case <-time.After(time.Until(t0.Add(elapsed))):
 		}
 		lvl := t.levels[i]
-		if err := lt.WriteSample(media.Sample{Data: t.pkts[i], Duration: d, PacketTimestamp: ts}, &lksdk.SampleWriteOptions{AudioLevel: &lvl}); err != nil {
+		if err := w.WriteFrame(t.pkts[i], ts, &lvl); err != nil {
 			return err
 		}
 		ts += uint32(n)

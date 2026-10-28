@@ -2,12 +2,12 @@ package main
 
 // bot: dev participants that join a room through a running server's dev
 // join (-server, as make bot passes it), as bots, and connect to the media
-// server it names:
+// server it names (huddled's own SFU, or LiveKit: bot_lk.go):
 //
 //   - echo repeats each person's voice 1.5 s later, as its own track, so
 //     one person can test alone: you hear yourself once, and never an echo
-//     of the echo if echo cancellation works (its own tracks and other
-//     bots' aren't repeated: a bot's identity ends in wire.BotSuffix).
+//     of the echo if echo cancellation works (its own tracks, other bots'
+//     and agents' aren't repeated: a bot's identity ends in wire.BotSuffix).
 //   - play is a fixture participant: it plays an Ogg/Opus file, looping.
 //   - cam publishes the test pattern as a camera (1280x720 at 30 fps, three
 //     layers), or with -share as a screen (1920x1080 at 15 fps, two), so
@@ -28,15 +28,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/livekit/protocol/livekit"
-	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/pion/rtp"
-	"github.com/pion/webrtc/v4"
+	"github.com/pion/sdp/v3"
 
 	"github.com/anthonyrego/huddle/internal/devjoin"
 	"github.com/anthonyrego/huddle/internal/fixturemeet"
+	"github.com/anthonyrego/huddle/internal/rtc"
 	rtcroom "github.com/anthonyrego/huddle/internal/rtc/room"
+	"github.com/anthonyrego/huddle/internal/rtc/sfuclient"
 	"github.com/anthonyrego/huddle/internal/wire"
+	sig "github.com/anthonyrego/huddle/internal/wire/signal"
 )
 
 func init() {
@@ -85,128 +85,147 @@ func runBot(args []string) error {
 	}
 	m := devjoin.RTC(j)
 	slog.Info("bot: let in", "room", j.Room, "identity", j.Identity, "media", m.Kind, "mediaURL", m.URL)
-	if kind != "cam" && m.Kind != wire.MediaLiveKit {
-		return fmt.Errorf("the server's media is %s, and bot %s joins only LiveKit so far", m.Kind, kind)
-	}
 	switch kind {
 	case "echo":
-		return runEcho(ctx, m.URL, m.Token, *delay)
+		if m.Kind == wire.MediaBuiltin {
+			return runEcho(ctx, m, *delay, sfuclient.Options{})
+		}
+		return runEchoLiveKit(ctx, m.URL, m.Token, *delay)
 	case "cam":
 		return runCam(ctx, m, *share)
 	default:
-		return runPlay(ctx, m.URL, m.Token, *oggPath, *loop)
+		return runPlay(ctx, m, *oggPath, *loop)
 	}
 }
 
-// echo is the echo bot: one delayed copy of each person's audio track.
-type echo struct {
-	lk    *lksdk.Room
-	delay time.Duration
-	mu    sync.Mutex
-	pubs  map[string]string // remote track SID → our track SID
+// echoes reports whether the echo bot repeats a participant: people only,
+// never a bot (the echo bot itself, fixture bots) or an agent (the
+// whiteboard).
+func echoes(identity string, agent bool) bool {
+	return !agent && !strings.HasSuffix(identity, wire.BotSuffix)
 }
 
-func runEcho(ctx context.Context, url, tok string, delay time.Duration) error {
-	e := &echo{delay: delay, pubs: map[string]string{}}
-	cb := &lksdk.RoomCallback{ParticipantCallback: lksdk.ParticipantCallback{
-		OnTrackSubscribed:   e.subscribed,
-		OnTrackUnsubscribed: e.unsubscribed,
-	}}
-	e.lk = lksdk.NewRoom(cb)
-	if err := e.lk.JoinWithToken(url, tok, lksdk.WithAutoSubscribe(true)); err != nil {
+// echo is the echo bot on huddled's own SFU: for each person's voice, a
+// track of its own that repeats it, packet by packet, delay later.
+type echo struct {
+	ctx   context.Context
+	delay time.Duration
+	ready chan struct{} // s is set
+	s     *sfuclient.Session
+
+	mu     sync.Mutex
+	agents map[string]bool // identities that are agents
+}
+
+// runEcho joins as the echo bot and echoes until ctx ends (or the session
+// does: the error says why). o tunes the session (tests).
+func runEcho(ctx context.Context, m rtc.Join, delay time.Duration, o sfuclient.Options) error {
+	e := &echo{ctx: ctx, delay: delay, ready: make(chan struct{}), agents: map[string]bool{}}
+	ended := make(chan error, 1)
+	s, err := sfuclient.Join(ctx, m.URL, m.Token, o, sfuclient.Events{
+		Joined: func(_ sig.Participant, others []sig.Participant) {
+			for _, p := range others {
+				e.seen(p)
+			}
+		},
+		Arrived: e.seen,
+		TrackAdded: func(rt *sfuclient.RemoteTrack) {
+			e.mu.Lock()
+			agent := e.agents[rt.Participant]
+			e.mu.Unlock()
+			if rt.Kind == sig.Audio && echoes(rt.Participant, agent) {
+				go e.echo(rt)
+			}
+		},
+		Disconnected: func(err error) { ended <- err },
+	})
+	if err != nil {
 		return err
 	}
-	defer e.lk.Disconnect()
-	slog.Info("bot: echo joined", "room", e.lk.Name(), "delay", delay)
-	<-ctx.Done()
-	return nil
+	defer s.Close()
+	e.s = s
+	close(e.ready)
+	slog.Info("bot: echo joined", "room", s.Room(), "delay", delay)
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-ended:
+		return fmt.Errorf("the media server: %w", err)
+	}
 }
 
-func (e *echo) subscribed(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-	if track.Kind() != webrtc.RTPCodecTypeAudio || strings.HasSuffix(rp.Identity(), wire.BotSuffix) {
-		return
-	}
-	if !strings.EqualFold(track.Codec().MimeType, webrtc.MimeTypeOpus) {
-		return
-	}
-	lt, err := lksdk.NewLocalTrack(fixturemeet.OpusCap)
-	if err != nil {
-		slog.Error("bot: echo track", "err", err)
-		return
-	}
-	mine, err := e.lk.LocalParticipant.PublishTrack(lt, &lksdk.TrackPublicationOptions{Name: "echo of " + rp.Identity(), Source: livekit.TrackSource_MICROPHONE})
-	if err != nil {
-		slog.Error("bot: echo publish", "for", rp.Identity(), "err", err)
-		return
-	}
+func (e *echo) seen(p sig.Participant) {
 	e.mu.Lock()
-	e.pubs[pub.SID()] = mine.SID()
+	e.agents[p.Identity] = p.Agent
 	e.mu.Unlock()
-	slog.Info("bot: echoing", "identity", rp.Identity(), "track", pub.SID(), "as", mine.SID())
+}
 
+// echo repeats one person's voice until it ends, then unpublishes the
+// repeat.
+func (e *echo) echo(rt *sfuclient.RemoteTrack) {
+	<-e.ready
+	who := rt.Participant
+	track, sid, err := e.s.PublishAudio(e.ctx, "echo of "+who)
+	if err != nil {
+		slog.Error("bot: echo publish", "for", who, "err", err)
+		return
+	}
+	slog.Info("bot: echoing", "identity", who, "track", rt.SID, "as", sid)
+	var levelID uint8
+	for _, x := range rt.Receiver.GetParameters().HeaderExtensions {
+		if x.URI == sdp.AudioLevelURI {
+			levelID = uint8(x.ID)
+		}
+	}
 	type held struct {
-		p  *rtp.Packet
-		at time.Time
+		frame []byte
+		ts    uint32
+		level *uint8
+		at    time.Time
 	}
 	q := make(chan held, 4096) // 80 s of 20 ms packets
 	go func() {
 		defer close(q)
 		for {
-			p, _, err := track.ReadRTP()
+			p, _, err := rt.Track.ReadRTP()
 			if err != nil {
 				return
 			}
-			// The extensions were numbered for our subscription; the track
-			// we publish negotiates its own.
-			p.Extension, p.Extensions = false, nil
+			h := held{frame: p.Payload, ts: p.Timestamp, at: time.Now().Add(e.delay)}
+			if b := p.GetExtension(levelID); levelID != 0 && len(b) > 0 {
+				lv := b[0] & 0x7f
+				h.level = &lv
+			}
 			select {
-			case q <- held{p, time.Now().Add(e.delay)}:
+			case q <- h:
 			default:
 			}
 		}
 	}()
-	go func() {
-		for h := range q {
-			if d := time.Until(h.at); d > 0 {
-				time.Sleep(d)
-			}
-			lt.WriteRTP(h.p, nil)
+	for h := range q {
+		if d := time.Until(h.at); d > 0 {
+			time.Sleep(d)
 		}
-	}()
-}
-
-func (e *echo) unsubscribed(_ *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-	e.mu.Lock()
-	mine, ok := e.pubs[pub.SID()]
-	delete(e.pubs, pub.SID())
-	e.mu.Unlock()
-	if ok {
-		e.lk.LocalParticipant.UnpublishTrack(mine)
-		slog.Info("bot: stopped echoing", "identity", rp.Identity())
+		track.WriteFrame(h.frame, h.ts, h.level) // before it's negotiated: dropped
 	}
+	e.s.Unpublish(sid)
+	slog.Info("bot: stopped echoing", "identity", who)
 }
 
 // runPlay plays an Ogg/Opus file as a participant's mic, in real time,
 // with each packet's RFC 6464 level.
-func runPlay(ctx context.Context, url, tok, path string, loop bool) error {
+func runPlay(ctx context.Context, m rtc.Join, path string, loop bool) error {
 	t, err := fixturemeet.ReadTrack(path)
 	if err != nil {
 		return err
 	}
-	lk := lksdk.NewRoom(&lksdk.RoomCallback{})
-	if err := lk.JoinWithToken(url, tok, lksdk.WithAutoSubscribe(false)); err != nil {
-		return err
-	}
-	defer lk.Disconnect()
-	lt, err := lksdk.NewLocalSampleTrack(fixturemeet.OpusCap)
+	mic, err := fixturemeet.JoinMic(ctx, m, "microphone")
 	if err != nil {
 		return err
 	}
-	if _, err := lk.LocalParticipant.PublishTrack(lt, &lksdk.TrackPublicationOptions{Name: "microphone", Source: livekit.TrackSource_MICROPHONE}); err != nil {
-		return err
-	}
-	slog.Info("bot: playing", "room", lk.Name(), "file", path, "packets", t.Packets(), "loop", loop)
-	if err := t.Play(ctx, lt, time.Now(), loop); err != nil && ctx.Err() == nil {
+	defer mic.Close()
+	slog.Info("bot: playing", "file", path, "packets", t.Packets(), "loop", loop)
+	if err := t.Play(ctx, mic, time.Now(), loop); err != nil && ctx.Err() == nil {
 		return err
 	}
 	return nil

@@ -80,6 +80,7 @@ type VideoTrackStats struct {
 	PLIs       int // keyframes asked for
 	DecodeErrs int
 	LostPkts   int // packets given up for good
+	Cut        int // units cut off by the next (a layer switch), dropped
 	// Recoveries are how long each loss took to mend: from the gap found
 	// to the next keyframe shown.
 	Recoveries []time.Duration
@@ -212,7 +213,7 @@ func (t *videoTrack) read() {
 		for _, u := range asm.push(p, now) {
 			t.mu.Lock()
 			t.st.Units++
-			t.st.LostPkts = asm.Dropped
+			t.st.LostPkts, t.st.Cut = asm.Dropped, asm.Cut
 			if u.gap && !t.waitKey {
 				t.st.Gaps++
 				t.waitKey, t.lostAt = true, now
@@ -334,7 +335,7 @@ func (t *videoTrack) logStats() {
 	s := t.Stats()
 	slog.Info("video: track", "identity", s.Identity, "kind", s.Kind, "w", s.W, "h", s.H, "frames", s.Frames, "keyframes", s.Keyframes,
 		"units", s.Units, "skipped", s.Skipped, "gaps", s.Gaps, "plis", s.PLIs, "decodeErrs", s.DecodeErrs, "lostPkts", s.LostPkts,
-		"lipSyncHold", s.Held.Round(time.Millisecond), "firstFrame", s.FirstFrame.Round(time.Millisecond))
+		"cut", s.Cut, "lipSyncHold", s.Held.Round(time.Millisecond), "firstFrame", s.FirstFrame.Round(time.Millisecond))
 }
 
 // VideoTracks returns each remote video's numbers (for tools).

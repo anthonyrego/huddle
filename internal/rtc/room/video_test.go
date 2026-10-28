@@ -71,16 +71,54 @@ func TestAssembleInOrder(t *testing.T) {
 	for _, p := range packetize(aus) {
 		got = append(got, a.push(p, now)...)
 	}
-	// The first unit is skipped: the assembler starts after a marker.
-	if len(got) != len(aus)-1 {
-		t.Fatalf("%d units out, want %d", len(got), len(aus)-1)
+	// The stream starts with a keyframe's first packet: it comes out.
+	if len(got) != len(aus) {
+		t.Fatalf("%d units out, want %d", len(got), len(aus))
 	}
 	for i, u := range got {
-		if !same(u.data, aus[i+1]) {
-			t.Fatalf("unit %d differs", i+1)
+		if !same(u.data, aus[i]) {
+			t.Fatalf("unit %d differs", i)
 		}
-		if u.key != ((i+1)%10 == 0) || u.gap {
-			t.Fatalf("unit %d: key %v gap %v", i+1, u.key, u.gap)
+		if u.key != (i%10 == 0) || u.gap {
+			t.Fatalf("unit %d: key %v gap %v", i, u.key, u.gap)
+		}
+	}
+}
+
+// TestAssembleJoinMidway: joined in the middle of a unit, the assembler
+// starts after the first marker, or at a keyframe's first packet if one
+// comes before it.
+func TestAssembleJoinMidway(t *testing.T) {
+	aus := units(30, 10)
+	pkts := packetize(aus)
+	from := func(unit, packet int) []*rtp.Packet {
+		n := 0
+		for i, p := range pkts {
+			if n == unit {
+				return pkts[i+packet:]
+			}
+			if p.Marker {
+				n++
+			}
+		}
+		return nil
+	}
+	for _, c := range []struct {
+		name         string
+		unit, packet int
+		first        int // the first unit out
+	}{
+		{"in a P slice", 6, 1, 7},  // unit 6 takes three packets
+		{"in a keyframe", 0, 2, 1}, // its IDR is in FU-A fragments
+		{"at a keyframe", 10, 0, 10},
+	} {
+		a := newAssembler()
+		var got []au
+		for _, p := range from(c.unit, c.packet) {
+			got = append(got, a.push(p, time.Now())...)
+		}
+		if len(got) != len(aus)-c.first || !same(got[0].data, aus[c.first]) || got[0].gap {
+			t.Fatalf("joined %s: %d units out, want %d from unit %d", c.name, len(got), len(aus)-c.first, c.first)
 		}
 	}
 }
@@ -166,8 +204,8 @@ func TestAssembleLoss(t *testing.T) {
 			t.Fatal("a retransmission that came in time read as a loss")
 		}
 	}
-	if len(got) != len(aus)-1 {
-		t.Fatalf("%d units with a retransmission, want %d", len(got), len(aus)-1)
+	if len(got) != len(aus) {
+		t.Fatalf("%d units with a retransmission, want %d", len(got), len(aus))
 	}
 }
 
@@ -190,8 +228,8 @@ func TestAssemblePadding(t *testing.T) {
 	for _, p := range out {
 		got = append(got, a.push(p, time.Now())...)
 	}
-	if len(got) != len(aus)-1 {
-		t.Fatalf("%d units with padding, want %d", len(got), len(aus)-1)
+	if len(got) != len(aus) {
+		t.Fatalf("%d units with padding, want %d", len(got), len(aus))
 	}
 }
 
@@ -373,12 +411,12 @@ func TestFiller(t *testing.T) {
 	for _, pk := range packetize(padded) {
 		got = append(got, a.push(pk, time.Now())...)
 	}
-	if len(got) != len(padded)-1 {
+	if len(got) != len(padded) {
 		t.Fatalf("%d units out of %d", len(got), len(padded))
 	}
 	for i, u := range got {
-		if !same(u.data, padded[i+1]) {
-			t.Fatalf("unit %d changed on the way", i+1)
+		if !same(u.data, padded[i]) {
+			t.Fatalf("unit %d changed on the way", i)
 		}
 	}
 }

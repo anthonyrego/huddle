@@ -1,15 +1,19 @@
 package main
 
 // The device menu: the ⌃ beside the mic pill (or d) opens it above the
-// bar, listing the microphones, the speakers and echo cancelling with the
-// current ones checked. A pick switches at once (call.pick) and closes the
-// menu. Its look follows reel's dropdown (github.com/anthonyrego/reel,
-// internal/ui/controls Menu): rows in a shadowed card, a check on the
-// current one, the wheel scrolling what doesn't fit, and a click anywhere
-// else closing it. The list is read when the menu opens, so a device
-// plugged in since shows up.
+// bar, listing the microphones, the speakers, echo cancelling and the
+// cameras with the current ones checked. A pick switches at once and
+// closes the menu: a mic or speakers through call.pick, a camera through
+// pickCamera, which leaves the voice's devices alone. Its look follows
+// reel's dropdown (github.com/anthonyrego/reel, internal/ui/controls
+// Menu): rows in a shadowed card, a check on the current one, the wheel
+// scrolling what doesn't fit, and a click anywhere else closing it. The
+// lists are read when the menu opens, so a device plugged in since shows
+// up.
 
 import (
+	"log/slog"
+
 	"github.com/anthonyrego/huddle/internal/draw"
 	"github.com/anthonyrego/huddle/internal/platform/audio"
 	"github.com/anthonyrego/huddle/internal/text"
@@ -30,6 +34,7 @@ type menuRow struct {
 	detail string      // muted, after the label
 	on     bool        // the current choice
 	pick   devicePrefs // what choosing it picks
+	camera bool        // a camera: picking it changes only pick.Camera
 }
 
 type devMenu struct {
@@ -104,6 +109,67 @@ func deviceRows(devs []audio.VoiceDevice, listErr error, p devicePrefs, st callS
 	return rows
 }
 
+// cameraRows is the menu's Camera section: the cameras listed (listErr
+// when they couldn't be), the one picked checked, and why the camera
+// isn't on if it failed (the call's word, else the button's ask's).
+func cameraRows(cams []cameraDevice, listErr error, p devicePrefs, v videoState, askErr string) []menuRow {
+	rows := []menuRow{{kind: rowHeader, label: "Camera"}}
+	if listErr != nil {
+		rows = append(rows, menuRow{kind: rowNote, label: "Can't list the cameras: " + listErr.Error()})
+	} else {
+		def := ""
+		for _, d := range cams {
+			if d.Default {
+				def = d.Name
+			}
+		}
+		q := p
+		q.Camera = ""
+		rows = append(rows, menuRow{kind: rowChoice, label: "System default", detail: def, on: p.Camera == "", pick: q, camera: true})
+		found := p.Camera == ""
+		for _, d := range cams {
+			q := p
+			q.Camera = d.UID
+			rows = append(rows, menuRow{kind: rowChoice, label: d.Name, detail: d.Transport, on: p.Camera == d.UID, pick: q, camera: true})
+			found = found || p.Camera == d.UID
+		}
+		switch {
+		case len(cams) == 0:
+			rows = append(rows, menuRow{kind: rowNote, label: "No camera found"})
+		case !found:
+			rows = append(rows, menuRow{kind: rowNote, label: "The one picked isn't plugged in: using the default"})
+		}
+	}
+	err := v.camErr
+	if err == "" {
+		err = askErr
+	}
+	if err != "" && !v.camera {
+		rows = append(rows, menuRow{kind: rowNote, label: "Camera: " + err})
+	}
+	return rows
+}
+
+// pickCamera keeps the camera picked (in devices.json, with the other
+// picks) and, while your camera is on, asks for it again so it moves to
+// the one picked. The mic and speakers aren't touched.
+func (s *meetingScene) pickCamera(uid string) {
+	c := s.call
+	c.mu.Lock()
+	c.prefs.Camera = uid
+	p, on := c.prefs, c.vid.camera
+	c.mu.Unlock()
+	if c.data != "" {
+		if err := writeDevicePrefs(c.data, p); err != nil {
+			slog.Warn("devices: couldn't keep the choice", "err", err)
+		}
+	}
+	slog.Info("devices: picked", "camera", uid != "")
+	if on {
+		s.askCamera(true)
+	}
+}
+
 // Menu layout.
 const (
 	menuRowH  = 30
@@ -119,12 +185,16 @@ func rowHeight(k rowKind) float32 {
 	return menuRowH
 }
 
-// openMenu opens the device menu on the devices listed.
-func (s *meetingScene) openMenu(devs []audio.VoiceDevice, err error) {
+// openMenu opens the device menu on the devices and cameras listed.
+func (s *meetingScene) openMenu(devs []audio.VoiceDevice, err error, cams []cameraDevice, camErr error) {
 	if s.call == nil {
 		return
 	}
-	s.menu = devMenu{open: true, hover: -1, rows: deviceRows(devs, err, s.call.devicePicks(), s.call.snapshot(), !s.call.noVoice)}
+	p := s.call.devicePicks()
+	_, _, askErr, _ := s.asks.get()
+	rows := deviceRows(devs, err, p, s.call.snapshot(), !s.call.noVoice)
+	rows = append(rows, cameraRows(cams, camErr, p, s.call.videoSnapshot(), askErr)...)
+	s.menu = devMenu{open: true, hover: -1, rows: rows}
 }
 
 // drawMenu draws the open menu above the device button, in a w×h window.
@@ -226,7 +296,11 @@ func (s *meetingScene) menuEvent(e ui.Event) bool {
 		for _, h := range m.hits {
 			if h.r.Contains(e.Pos) {
 				m.open = false
-				s.call.pick(m.rows[h.row].pick)
+				if row := m.rows[h.row]; row.camera {
+					s.pickCamera(row.pick.Camera)
+				} else {
+					s.call.pick(row.pick)
+				}
 				return true
 			}
 		}

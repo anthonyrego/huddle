@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -400,11 +401,12 @@ func (a *Agent) calls(ctx context.Context, t *turn, calls []*genai.FunctionCall)
 	}
 	commit()
 	if len(points) > 0 {
-		raw := make([]any, len(points))
+		// point_at changes nothing: its ops go out for the version shown.
+		raw := make([]json.RawMessage, len(points))
 		for i, p := range points {
-			raw[i] = p
+			raw[i], _ = json.Marshal(p)
 		}
-		a.cfg.Hub.Send(a.cfg.Room, wire.KindBoardOps, map[string]any{"room": a.cfg.Room, "seq": a.b.head, "ops": raw})
+		a.cfg.Hub.Send(a.cfg.Room, wire.KindBoardOps, wire.BoardOps{Room: a.cfg.Room, Seq: a.b.head, Ops: raw})
 	}
 
 	// Drawing that went through needs nothing more from the model, so it

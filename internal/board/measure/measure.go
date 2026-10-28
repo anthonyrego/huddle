@@ -126,7 +126,7 @@ func lay(m text.Measurer, s string, st text.Style, maxW float32) text.Layout {
 func Key(n *board.Node, sats []*board.Node) string {
 	k := string(n.Kind) + "\x00" + n.Label + "\x00" + n.Detail + "\x00" + n.Note
 	for _, s := range sats {
-		k += "\x01" + s.ID + "\x00" + string(s.Kind) + "\x00" + s.Label
+		k += "\x01" + s.ID + "\x00" + string(s.Kind) + "\x00" + s.Label + "\x00" + s.Detail
 	}
 	return k
 }
@@ -164,7 +164,11 @@ func MeasureCard(m text.Measurer, n *board.Node, sats []*board.Node) *Card {
 	for _, s := range sats {
 		st := &Sat{ID: s.ID, Kind: s.Kind}
 		st.Tag = lay(m, Tags[s.Kind], style(text.SansSemibold, TagSize), 0)
-		st.Label = lay(m, s.Label, style(text.SansRegular, SatSize), SatTextW)
+		label := s.Label
+		if s.Detail != "" {
+			label += " · " + s.Detail
+		}
+		st.Label = lay(m, label, style(text.SansRegular, SatSize), SatTextW)
 		st.W = max(st.Tag.Width, st.Label.Width) + 2*SatPadX
 		st.H = SatPadY + st.Tag.Height + 3 + st.Label.Height + SatPadY
 		y += SatGap

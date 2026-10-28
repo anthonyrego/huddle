@@ -308,3 +308,23 @@ func (s *Store) SetAgentState(ctx context.Context, meeting string, a AgentState)
 			summary = EXCLUDED.summary, updated_at = now()`, meeting, a.ResumeHandle, a.Summary)
 	return err
 }
+
+// Voice is the meeting's voice policy for the whiteboard ("answers",
+// "muted" or "narrate"), "" when it was never set.
+func (s *Store) Voice(ctx context.Context, meeting string) (string, error) {
+	var v string
+	err := s.pool.QueryRow(ctx, `SELECT coalesce(settings->>'voice', '') FROM meetings WHERE id = $1`, meeting).Scan(&v)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return v, err
+}
+
+// SetVoice sets the meeting's voice policy.
+func (s *Store) SetVoice(ctx context.Context, meeting, policy string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE meetings SET settings = settings || jsonb_build_object('voice', $2::text) WHERE id = $1`, meeting, policy)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}

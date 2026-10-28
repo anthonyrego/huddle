@@ -2,6 +2,7 @@ package video
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"testing"
 )
@@ -125,5 +126,18 @@ func TestReadScaled(t *testing.T) {
 		if Flash(shrink(f, 4)) {
 			t.Errorf("%dx%d: a flash that isn't", size[0], size[1])
 		}
+	}
+}
+
+// BenchmarkDraw: drawing the pattern (what a pattern source costs over a
+// camera's).
+func BenchmarkDraw(b *testing.B) {
+	for _, s := range [][2]int{{1280, 720}, {1920, 1080}} {
+		b.Run(fmt.Sprintf("%dx%d", s[0], s[1]), func(b *testing.B) {
+			f := NewFrame(s[0], s[1])
+			for i := range b.N {
+				Draw(&f, uint32(i), false)
+			}
+		})
 	}
 }

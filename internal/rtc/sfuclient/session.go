@@ -89,6 +89,12 @@ type RemoteTrack struct {
 // Disconnected's error.
 var ErrBye = errors.New("the server ended the session")
 
+// RefusedError is the server turning a join away (a bad or expired token,
+// another protocol), with its reason; errors.As finds it in Join's error.
+type RefusedError struct{ Reason string }
+
+func (e *RefusedError) Error() string { return "the server refused the join: " + e.Reason }
+
 // Session is one join of the SFU: the signalling WebSocket and the two
 // connections, publishing on one and receiving on the other.
 type Session struct {
@@ -202,7 +208,7 @@ func join(ctx context.Context, conn *websocket.Conn, token string, o Options) (s
 	case signal.KindError:
 		var m signal.Error
 		e.Decode(&m)
-		return signal.Joined{}, fmt.Errorf("the server refused the join: %s", m.Message)
+		return signal.Joined{}, &RefusedError{Reason: m.Message}
 	}
 	return signal.Joined{}, fmt.Errorf("join: the server answered %q", e.Kind)
 }

@@ -299,3 +299,40 @@ func BenchmarkLayers(b *testing.B) {
 		})
 	}
 }
+
+// TestHoldRepeats: a still screen sends nothing, so a keyframe asked for
+// is made from the picture the sender kept.
+func TestHoldRepeats(t *testing.T) {
+	s, err := NewSender(SenderConfig{Layers: ScreenLayers(1920, 1080), FPS: 15, Hold: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var keys []time.Time
+	if err := s.Start(func(layer int, au []byte, _ time.Duration) {
+		if layer == 0 && video.IsKeyframe(au) {
+			mu.Lock()
+			keys = append(keys, time.Now())
+			mu.Unlock()
+		}
+	}); err != nil {
+		t.Skip(err)
+	}
+	defer s.Stop()
+	pool, _ := NewPool(1920, 1080)
+	defer pool.Close()
+	b, _ := pool.Get()
+	b.Edit(func(f video.Frame) { video.Draw(&f, 5, false) })
+	s.Feed(b, time.Now())
+	b.Release()
+	time.Sleep(500 * time.Millisecond)
+	asked := time.Now()
+	s.KeyFrame(0)
+	time.Sleep(time.Second)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(keys) != 2 || keys[1].Before(asked) || keys[1].Sub(asked) > 600*time.Millisecond {
+		t.Fatalf("keyframes at %v (asked at %v)", keys, asked)
+	}
+	t.Logf("the kept picture went out as a keyframe %v after asking", keys[1].Sub(asked).Round(time.Millisecond))
+}

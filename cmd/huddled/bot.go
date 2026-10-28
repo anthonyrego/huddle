@@ -1,12 +1,13 @@
 package main
 
-// bot: dev participants that join a room straight through LiveKit (with
-// the server's LiveKit key, as make bot passes it):
+// bot: dev participants that join a room through a running server's dev
+// join (-server, as make bot passes it), as bots, and connect to the media
+// server it names:
 //
 //   - echo repeats each person's voice 1.5 s later, as its own track, so
 //     one person can test alone: you hear yourself once, and never an echo
 //     of the echo if echo cancellation works (its own tracks and other
-//     bots' aren't repeated).
+//     bots' aren't repeated: a bot's identity ends in wire.BotSuffix).
 //   - play is a fixture participant: it plays an Ogg/Opus file, looping.
 //   - cam publishes the test pattern as a camera (1280x720 at 30 fps, three
 //     layers), or with -share as a screen (1920x1080 at 15 fps, two), so
@@ -17,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -31,25 +33,23 @@ import (
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 
+	"github.com/anthonyrego/huddle/internal/devjoin"
 	"github.com/anthonyrego/huddle/internal/fixturemeet"
 	"github.com/anthonyrego/huddle/internal/rtc/lkrtc"
-	"github.com/anthonyrego/huddle/internal/server/httpapi"
-	"github.com/anthonyrego/huddle/internal/server/lktoken"
+	"github.com/anthonyrego/huddle/internal/wire"
 )
 
 func init() {
 	register(&command{name: "bot", summary: "dev participants: bot echo (repeats each voice 1.5 s later), bot play -ogg f.ogg, bot cam [-share] (the test pattern)", run: runBot})
 }
 
-// botSuffix ends every bot's identity, so bots don't echo bots.
-const botSuffix = "-bot"
-
 func runBot(args []string) error {
 	if len(args) == 0 || (args[0] != "echo" && args[0] != "play" && args[0] != "cam") {
-		return errors.New("usage: huddled bot echo [-room R] [-delay 1.5s] | huddled bot play -ogg f.ogg [-name N] [-room R] [-loop=false] | huddled bot cam [-name N] [-room R] [-share]")
+		return errors.New("usage: huddled bot echo [-room R] [-delay 1.5s] | huddled bot play -ogg f.ogg [-name N] [-room R] [-loop=false] | huddled bot cam [-name N] [-room R] [-share]; each takes -server URL")
 	}
 	kind := args[0]
 	fs := flag.NewFlagSet("bot "+kind, flag.ContinueOnError)
+	server := fs.String("server", env("HUDDLE_SERVER", "http://localhost:8080"), "the server whose dev join lets the bot in (HUDDLE_SERVER)")
 	room := fs.String("room", "test", "the room")
 	name := fs.String("name", "", "the name shown (default Echo, or the file's name)")
 	delay := fs.Duration("delay", 1500*time.Millisecond, "echo: how much later each voice comes back")
@@ -74,29 +74,27 @@ func runBot(args []string) error {
 			*name = strings.ToUpper(base[:min(1, len(base))]) + base[min(1, len(base)):]
 		}
 	}
-	url := os.Getenv("LIVEKIT_URL")
-	minter := lktoken.Minter{Key: os.Getenv("LIVEKIT_API_KEY"), Secret: os.Getenv("LIVEKIT_API_SECRET")}
-	if url == "" || minter.Key == "" || minter.Secret == "" {
-		return errors.New("set LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET (make bot does)")
-	}
-	roomName := httpapi.Slug(*room)
-	identity := httpapi.Slug(*name) + botSuffix
-	tok, err := minter.Mint(lktoken.Grant{Room: roomName, Identity: identity, Name: *name})
-	if err != nil {
-		return err
+	if kind == "play" && *oggPath == "" {
+		return errors.New("bot play needs -ogg")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	j, err := devjoin.Join(ctx, *server, wire.DevJoin{Room: *room, Name: *name, Bot: true})
+	if err != nil {
+		return err
+	}
+	m := devjoin.RTC(j)
+	slog.Info("bot: let in", "room", j.Room, "identity", j.Identity, "media", m.Kind, "mediaURL", m.URL)
+	if kind != "cam" && m.Kind != wire.MediaLiveKit {
+		return fmt.Errorf("the server's media is %s, and bot %s joins only LiveKit so far", m.Kind, kind)
+	}
 	switch kind {
 	case "echo":
-		return runEcho(ctx, url, tok, *delay)
+		return runEcho(ctx, m.URL, m.Token, *delay)
 	case "cam":
-		return runCam(ctx, url, tok, *share)
+		return runCam(ctx, m, *share)
 	default:
-		if *oggPath == "" {
-			return errors.New("bot play needs -ogg")
-		}
-		return runPlay(ctx, url, tok, *oggPath, *loop)
+		return runPlay(ctx, m.URL, m.Token, *oggPath, *loop)
 	}
 }
 
@@ -125,7 +123,7 @@ func runEcho(ctx context.Context, url, tok string, delay time.Duration) error {
 }
 
 func (e *echo) subscribed(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-	if track.Kind() != webrtc.RTPCodecTypeAudio || strings.HasSuffix(rp.Identity(), botSuffix) {
+	if track.Kind() != webrtc.RTPCodecTypeAudio || strings.HasSuffix(rp.Identity(), wire.BotSuffix) {
 		return
 	}
 	if !strings.EqualFold(track.Codec().MimeType, webrtc.MimeTypeOpus) {

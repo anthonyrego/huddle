@@ -106,10 +106,10 @@ notarize: app
 lan-ip:
 	@echo $(LAN_IP)
 
-# Dev participants in ROOM, through LiveKit with the dev key:
+# Dev participants in ROOM, let in by SERVER's dev join (make server running):
 # make bot ARGS="echo"  |  make bot ARGS="play -ogg .dev/fixtures/samantha.ogg"
 bot: build
-	@LIVEKIT_URL="$(LIVEKIT_URL)" LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret ./build/huddled bot $(word 1,$(ARGS)) -room "$(ROOM)" $(wordlist 2,99,$(ARGS))
+	./build/huddled bot $(word 1,$(ARGS)) -server "$(SERVER)" -room "$(ROOM)" $(wordlist 2,99,$(ARGS))
 
 # The voice gate's file-to-file runs through LiveKit (make server running):
 # click latency, and speech at 0, 5 and 10% loss with 40 ms jitter, WAVs in .dev/out.

@@ -12,8 +12,8 @@ import (
 
 // runCam publishes the test pattern as a camera or a screen until ctx
 // ends. It subscribes to nothing.
-func runCam(ctx context.Context, url, tok string, share bool) error {
-	room, err := (&lkrtc.Connector{SendOnly: true}).Connect(ctx, rtc.Join{URL: url, Token: tok}, rtc.Events{})
+func runCam(ctx context.Context, join rtc.Join, share bool) error {
+	room, err := (&lkrtc.Connector{SendOnly: true}).Connect(ctx, join, rtc.Events{})
 	if err != nil {
 		return err
 	}

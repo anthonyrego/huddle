@@ -558,7 +558,7 @@ func TestBuiltinVoice(t *testing.T) {
 	sent := pcm.Onsets(clicks, 0.02, rate/10, rate)
 	heard := pcm.Onsets(spk.Samples(), 0.02, rate/10, rate)
 	lag := func(s, h int) time.Duration {
-		return spk.Start().Add(time.Duration(h)*time.Second/rate).Sub(mic.Start().Add(time.Duration(s) * time.Second / rate))
+		return spk.Start().Add(time.Duration(h) * time.Second / rate).Sub(mic.Start().Add(time.Duration(s) * time.Second / rate))
 	}
 	var lats []time.Duration
 	for _, h := range heard {

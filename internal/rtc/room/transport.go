@@ -79,10 +79,10 @@ type transportEvents struct {
 
 // remoteTrack is a track we're sent.
 type remoteTrack struct {
-	sid    string // the server's name for it
-	who    string // its publisher's identity
-	name   string // its publisher's name for it
-	kind   webrtc.RTPCodecType
+	sid  string // the server's name for it
+	who  string // its publisher's identity
+	name string // its publisher's name for it
+	kind webrtc.RTPCodecType
 	// mime is its codec's MIME type, as negotiated (a TrackRemote's own
 	// Codec is empty until its first packet is read).
 	mime   string

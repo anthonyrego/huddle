@@ -44,7 +44,7 @@ func TestLoopbackURL(t *testing.T) {
 		"ws://127.0.0.1:8092/rtc":    true,
 		"ws://localhost:8092/rtc":    true,
 		"ws://[::1]:8092/rtc":        true,
-		"ws://10.10.70.162:8092/rtc": false,
+		"ws://192.168.1.20:8092/rtc": false,
 		"wss://huddle.example/rtc":   false,
 		"::bad":                      false,
 	} {

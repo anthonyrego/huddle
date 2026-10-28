@@ -1,7 +1,7 @@
 // Package icept holds the pion interceptors huddle's media connections use
-// on either end: a narrow uplink and a bad network for tests (the pacer and
-// congestion control join them as the media server's step 1 goes on).
-// Pure.
+// on either end: congestion control for what a connection sends (pion's
+// GCC with a pacer of our own that sends the voice first), and a narrow
+// uplink and a bad network for tests. Pure.
 package icept
 
 import (

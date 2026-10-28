@@ -258,8 +258,8 @@ type videoCC struct {
 	r *room
 
 	mu       sync.Mutex
-	pcIDs    map[string]*estimator // every peer connection's, by id, until the publisher's is known
-	est      *estimator
+	pcIDs    map[string]*icept.Estimator // every peer connection's, by id, until the publisher's is known
+	est      *icept.Estimator
 	alloc    allocator
 	pubs     []*videoPub
 	raw      int // GCC's estimate
@@ -270,18 +270,18 @@ type videoCC struct {
 }
 
 func newVideoCC(r *room) *videoCC {
-	return &videoCC{r: r, pcIDs: map[string]*estimator{}, raw: bweInitial, quit: make(chan struct{})}
+	return &videoCC{r: r, pcIDs: map[string]*icept.Estimator{}, raw: icept.BWEInitial, quit: make(chan struct{})}
 }
 
 // found is the cc interceptor telling us of a peer connection's estimator.
-func (v *videoCC) found(id string, e *estimator) {
+func (v *videoCC) found(id string, e *icept.Estimator) {
 	v.mu.Lock()
 	v.pcIDs[id] = e
 	v.mu.Unlock()
 }
 
 // estimator is the publisher connection's.
-func (v *videoCC) estimator() *estimator {
+func (v *videoCC) estimator() *icept.Estimator {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.est != nil {
@@ -351,7 +351,7 @@ func (v *videoCC) remove(p *videoPub) {
 func (v *videoCC) allocate() {
 	sent := 0
 	if e := v.estimator(); e != nil {
-		sent = e.pacer.sentRate()
+		sent = e.Pacer.SentRate()
 	}
 	v.mu.Lock()
 	if len(v.pubs) == 0 {
@@ -384,7 +384,7 @@ func (v *videoCC) allocate() {
 	pace := max(v.usable, given)
 	v.mu.Unlock()
 	if est != nil {
-		est.pacer.setRate(pace)
+		est.Pacer.SetRate(pace)
 	}
 	for _, s := range sets {
 		s.p.setBitrates(s.bps)
@@ -404,8 +404,8 @@ func (v *videoCC) estimate() Estimate {
 	var s Estimate
 	e := v.estimator()
 	if e != nil {
-		s.Sent = e.pacer.sentRate()
-		s.Queue, s.QueueBytes = e.pacer.queued()
+		s.Sent = e.Pacer.SentRate()
+		s.Queue, s.QueueBytes = e.Pacer.Queued()
 	}
 	v.mu.Lock()
 	s.Raw, s.Usable = v.raw, v.usable

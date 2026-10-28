@@ -163,7 +163,7 @@ func (c *Connector) Connect(ctx context.Context, j rtc.Join, ev rtc.Events) (rtc
 	if c.Uplink > 0 {
 		ics = append(ics, &icept.Uplink{BPS: c.Uplink, Slots: icept.UplinkSlots, Made: r.cc.addUplink})
 	}
-	ccf, err := newCC(r.cc.found)
+	ccf, err := icept.NewCC(r.cc.found)
 	if err != nil {
 		r.cancel()
 		return nil, err

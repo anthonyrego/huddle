@@ -3,6 +3,8 @@ package room
 import (
 	"slices"
 	"time"
+
+	"github.com/anthonyrego/huddle/internal/rtc/icept"
 )
 
 // The estimate shared among the video layers being sent. Layers get their
@@ -158,7 +160,7 @@ func (a *allocator) allocate(raw, sent int, now time.Time) int {
 	// What a layer may start at without a probe: the cap, or before
 	// anything has been sent, the estimate GCC starts from (its own may
 	// have grown for minutes while only the voice was sent).
-	leftFresh := min(raw, max(usable, bweInitial)) - audioReserve
+	leftFresh := min(raw, max(usable, icept.BWEInitial)) - audioReserve
 	blocked := false
 	var top *allocLayer // the highest layer running
 	for _, l := range a.layers {

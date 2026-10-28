@@ -65,6 +65,8 @@ type videoTrack struct {
 	holdSum  time.Duration
 	holdN    int
 	lastSize [2]int
+	shown    bool   // a frame has been shown
+	shownTS  uint32 // the RTP timestamp of the last one
 }
 
 // VideoTrackStats are a remote video's numbers.
@@ -81,6 +83,7 @@ type VideoTrackStats struct {
 	DecodeErrs int
 	LostPkts   int // packets given up for good
 	Cut        int // units cut off by the next (a layer switch), dropped
+	Stale      int // frames decoded but not shown: no newer than the last shown
 	// Recoveries are how long each loss took to mend: from the gap found
 	// to the next keyframe shown.
 	Recoveries []time.Duration
@@ -252,8 +255,16 @@ func (t *videoTrack) askKey() {
 	t.ctl.pli()
 }
 
+// staleMost is how far behind the last frame shown (in 90 kHz ticks) a
+// frame can be and still be old news; further back, the sender's clock
+// started over, and the frame is shown.
+const staleMost = 5 * 90000
+
 // play holds each unit until the same person's audio reaches it, decodes
-// it and shows it.
+// it and shows it if it's newer than the last frame shown. An older one
+// (the SFU switched to a layer behind the last, and sent a few frames
+// again from its keyframe) is decoded, for the frames after it, and not
+// shown.
 func (t *videoTrack) play() {
 	defer t.dec.Close()
 	var f video.Frame
@@ -280,6 +291,14 @@ func (t *videoTrack) play() {
 		if !ok {
 			continue
 		}
+		t.mu.Lock()
+		if d := int32(u.ts - t.shownTS); t.shown && d <= 0 && d >= -staleMost {
+			t.st.Stale++
+			t.mu.Unlock()
+			continue
+		}
+		t.shown, t.shownTS = true, u.ts
+		t.mu.Unlock()
 		now := time.Now()
 		f.At, f.Mirror = now, false
 		t.latest.Put(f)
@@ -335,7 +354,7 @@ func (t *videoTrack) logStats() {
 	s := t.Stats()
 	slog.Info("video: track", "identity", s.Identity, "kind", s.Kind, "w", s.W, "h", s.H, "frames", s.Frames, "keyframes", s.Keyframes,
 		"units", s.Units, "skipped", s.Skipped, "gaps", s.Gaps, "plis", s.PLIs, "decodeErrs", s.DecodeErrs, "lostPkts", s.LostPkts,
-		"cut", s.Cut, "lipSyncHold", s.Held.Round(time.Millisecond), "firstFrame", s.FirstFrame.Round(time.Millisecond))
+		"cut", s.Cut, "stale", s.Stale, "lipSyncHold", s.Held.Round(time.Millisecond), "firstFrame", s.FirstFrame.Round(time.Millisecond))
 }
 
 // VideoTracks returns each remote video's numbers (for tools).

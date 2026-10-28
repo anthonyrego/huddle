@@ -22,10 +22,11 @@ var published atomic.Int64
 // publication is one published track: what the SFU receives of it, and the
 // down tracks it feeds, one per subscriber.
 //
-// A voice is read from its TrackRemote and each packet written to every
-// down track as it arrives. The track's sender reports are kept, for the
-// down tracks' own (downTrack.report). A video's layers are read and
-// dropped for now: forwarding them is the media server's step 3.
+// A voice is read from its TrackRemote (or written by an in-process
+// participant's LocalTrack) and each packet written to every down track as
+// it arrives. The track's sender reports are kept, for the down tracks'
+// own (downTrack.report). A video's layers are read and dropped for now:
+// forwarding them is the media server's step 3.
 type publication struct {
 	sid, cid string
 	n        int64
@@ -39,7 +40,7 @@ type publication struct {
 
 	mu     sync.Mutex
 	downs  []*downTrack                   // replaced, never changed in place: forward reads it unlocked
-	src    *webrtc.TrackRemote            // the voice being forwarded
+	src    any                            // where the voice being forwarded comes from: a *webrtc.TrackRemote, or a *LocalTrack
 	layers map[string]*webrtc.TrackRemote // a video's, by rid
 	closed bool
 
@@ -118,30 +119,35 @@ func (pub *publication) receive(tr *webrtc.TrackRemote, rcv *webrtc.RTPReceiver)
 		if err != nil {
 			return
 		}
-		pub.forward(tr, p, levelID, time.Now())
+		var level byte
+		var hasLevel bool
+		if levelID != 0 {
+			if b := p.GetExtension(levelID); len(b) > 0 {
+				level, hasLevel = b[0], true
+			}
+		}
+		pub.forward(tr, p, level, hasLevel, time.Now())
 	}
 }
 
-// forward writes one packet of the voice to every down track.
-func (pub *publication) forward(tr *webrtc.TrackRemote, p *rtp.Packet, levelID uint8, now time.Time) {
+// forward writes one packet of the voice, from src, to every down track;
+// level is its RFC 6464 byte, when hasLevel. False when the publication
+// has closed, or src isn't what it forwards.
+func (pub *publication) forward(src any, p *rtp.Packet, level byte, hasLevel bool, now time.Time) bool {
 	pub.mu.Lock()
-	if pub.closed || pub.src != tr {
+	if pub.closed || pub.src != src {
 		pub.mu.Unlock()
-		return
+		return false
 	}
 	downs := pub.downs
 	pub.mu.Unlock()
-	var level byte
-	var hasLevel bool
-	if levelID != 0 {
-		if b := p.GetExtension(levelID); len(b) > 0 {
-			level, hasLevel = b[0], true
-			pub.level.observe(b[0]&0x7f, p.Timestamp, now)
-		}
+	if hasLevel {
+		pub.level.observe(level&0x7f, p.Timestamp, now)
 	}
 	for _, dt := range downs {
 		dt.write(p, level, hasLevel, now)
 	}
+	return true
 }
 
 // readReports keeps the stream's sender reports until it ends. Reports
@@ -175,6 +181,14 @@ func (pub *publication) readReports(tr *webrtc.TrackRemote, read func() ([]rtcp.
 			}
 		}
 	}
+}
+
+// setReport stands in for a sender report: an in-process publisher's,
+// whose RTP time is now.
+func (pub *publication) setReport(sr senderReport) {
+	pub.srMu.Lock()
+	pub.sr = sr
+	pub.srMu.Unlock()
 }
 
 // report is the last sender report.

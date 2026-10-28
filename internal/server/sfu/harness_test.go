@@ -371,6 +371,7 @@ type speaker struct {
 	track   *sfuclient.Track
 	base    uint32
 	clocked bool
+	start   time.Time // frame 0's moment (and, clocked, RTP time base)
 	level   atomic.Uint32
 	sent    atomic.Int64 // frames written
 	stop    chan struct{}
@@ -381,7 +382,7 @@ type speaker struct {
 }
 
 func speak(t *testing.T, who string, track *sfuclient.Track, level uint8, clocked bool) *speaker {
-	sp := &speaker{who: who, track: track, base: uint32(len(who)) * 1_000_003, clocked: clocked, stop: make(chan struct{}), done: make(chan struct{})}
+	sp := &speaker{who: who, track: track, base: uint32(len(who)) * 1_000_003, clocked: clocked, start: time.Now(), stop: make(chan struct{}), done: make(chan struct{})}
 	sp.level.Store(uint32(level))
 	go sp.run()
 	t.Cleanup(sp.halt)
@@ -390,7 +391,7 @@ func speak(t *testing.T, who string, track *sfuclient.Track, level uint8, clocke
 
 func (sp *speaker) run() {
 	defer close(sp.done)
-	start := time.Now()
+	start := sp.start
 	n := 0
 	for i := 0; ; i++ {
 		select {
@@ -428,6 +429,17 @@ func (sp *speaker) tsOf(n int) uint32 {
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
 	return sp.tss[n]
+}
+
+// writtenAt is when a clocked speaker wrote frame n (its RTP time on the
+// speaker's clock), if it has.
+func (sp *speaker) writtenAt(n int) (time.Time, bool) {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	if !sp.clocked || n >= len(sp.tss) {
+		return time.Time{}, false
+	}
+	return sp.start.Add(time.Duration(sp.tss[n]-sp.base) * time.Second / 48000), true
 }
 
 // What tests look at on the SFU's side.

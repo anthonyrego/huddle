@@ -420,6 +420,7 @@ type frameRow struct {
 	captured, received, assembled, shown time.Time
 	held, decode                         time.Duration
 	key, flash                           bool
+	sync                                 rtcroom.SyncInfo
 }
 
 // videoTrace writes every received video packet and access unit (-trace).
@@ -546,7 +547,7 @@ func (r *videoRun) frame(t rtc.VideoTrack, f video.Frame, info rtcroom.VideoFram
 	now := time.Now()
 	n, ok := video.ReadCode(f)
 	row := frameRow{who: t.Identity(), kind: t.Kind(), n: n, read: ok, w: f.W, h: f.H, rtp: info.RTP, received: info.Received, assembled: info.Assembled,
-		shown: now, held: info.Held, decode: info.Decode, key: info.Key, flash: ok && video.Flash(f)}
+		shown: now, held: info.Held, decode: info.Decode, key: info.Key, flash: ok && video.Flash(f), sync: info.Sync}
 	if ok && t.Identity() == r.sendID {
 		r.capMu.Lock()
 		row.captured = r.caps[t.Kind()][n]
@@ -583,14 +584,14 @@ func (r *videoRun) report(room rtc.Room, dir string, switchW int, switchedAt tim
 	if dir != "" {
 		if f, err := os.Create(filepath.Join(dir, "frames.csv")); err == nil {
 			w := bufio.NewWriter(f)
-			fmt.Fprintln(w, "identity,kind,frame,w,h,captured_ns,received_ns,shown_ns,latency_ms,held_ms,key,flash,rtp,assembled_ns,decode_ms")
+			fmt.Fprintln(w, "identity,kind,frame,w,h,captured_ns,received_ns,shown_ns,latency_ms,held_ms,key,flash,rtp,assembled_ns,decode_ms,sync,sync_reports_ms,sync_arrivals_ms")
 			for _, x := range rows {
 				lat := ""
 				if !x.captured.IsZero() {
 					lat = fmt.Sprintf("%.1f", float64(x.shown.Sub(x.captured).Microseconds())/1000)
 				}
-				fmt.Fprintf(w, "%s,%s,%d,%d,%d,%d,%d,%d,%s,%.1f,%v,%v,%d,%d,%.1f\n", x.who, x.kind, x.n, x.w, x.h, nanos(x.captured), nanos(x.received),
-					nanos(x.shown), lat, float64(x.held.Microseconds())/1000, x.key, x.flash, x.rtp, nanos(x.assembled), float64(x.decode.Microseconds())/1000)
+				fmt.Fprintf(w, "%s,%s,%d,%d,%d,%d,%d,%d,%s,%.1f,%v,%v,%d,%d,%.1f,%s,%s,%s\n", x.who, x.kind, x.n, x.w, x.h, nanos(x.captured), nanos(x.received),
+					nanos(x.shown), lat, float64(x.held.Microseconds())/1000, x.key, x.flash, x.rtp, nanos(x.assembled), float64(x.decode.Microseconds())/1000, x.sync.How, msIf(x.sync.Reports, x.sync.ReportsOK), msIf(x.sync.Arrivals, x.sync.ArrivalsOK))
 			}
 			w.Flush()
 			f.Close()
@@ -692,6 +693,7 @@ func (r *videoRun) lipSync(heard []float32, spkStart time.Time) {
 	r.mu.Unlock()
 	var offs []time.Duration
 	var flashes int
+	how := map[string]int{}
 	for i, x := range rows {
 		// The first frame of a flash (it lights one frame).
 		if !x.flash || x.who != r.sendID || (i > 0 && rows[i-1].flash && rows[i-1].n == x.n) {
@@ -706,8 +708,14 @@ func (r *videoRun) lipSync(heard []float32, spkStart time.Time) {
 		}
 		if absDur(best) < 500*time.Millisecond {
 			offs = append(offs, best)
+			h := x.sync.How
+			if h == "" {
+				h = "none"
+			}
+			how[h]++
 		}
 	}
+	defer fmt.Printf("lip sync timed by reports %d, arrivals %d, none %d\n", how["reports"], how["arrivals"], how["none"])
 	if len(offs) == 0 {
 		fmt.Printf("lip sync %d flashes, %d beeps heard: none paired\n", flashes, len(beeps))
 		return
@@ -814,4 +822,12 @@ func (m *beepMic) Start() time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.start
+}
+
+// msIf is d in milliseconds, or empty.
+func msIf(d time.Duration, ok bool) string {
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%.1f", float64(d.Microseconds())/1000)
 }

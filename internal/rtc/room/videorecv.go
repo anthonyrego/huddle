@@ -225,6 +225,9 @@ func (t *videoTrack) read() {
 			wire, _ := icept.Arrived(attr)
 			pktHook(t, p, wire, now)
 		}
+		if len(p.Payload) > 0 { // not the SFU's padding
+			t.sr.arrived(p.Timestamp, now, 90000)
+		}
 		if t.wantKey.Swap(false) {
 			asm.awaitKey(now)
 		}
@@ -307,7 +310,8 @@ func (t *videoTrack) play() {
 	var f video.Frame
 	for u := range t.aus {
 		held := time.Duration(0)
-		if due, ok := t.r.syncDue(t, u.ts); ok {
+		due, sync, ok := t.r.syncDue(t, u.ts)
+		if ok {
 			if wait := time.Until(due); wait > 0 {
 				time.Sleep(wait)
 				held = wait
@@ -365,7 +369,7 @@ func (t *videoTrack) play() {
 			slog.Info("video: frame", "identity", t.who, "kind", t.kind, "w", f.W, "h", f.H, "first", first, "sinceSubscribed", now.Sub(t.subAt).Round(time.Millisecond))
 		}
 		if hook := t.r.cfg.VideoFrame; hook != nil {
-			hook(t, f, VideoFrameInfo{RTP: u.ts, Received: u.last, Assembled: u.at, Held: held, Decode: decTook, Key: u.key})
+			hook(t, f, VideoFrameInfo{RTP: u.ts, Received: u.last, Assembled: u.at, Held: held, Sync: sync, Decode: decTook, Key: u.key})
 		}
 	}
 }
@@ -376,6 +380,7 @@ type VideoFrameInfo struct {
 	Received  time.Time     // when its last packet came
 	Assembled time.Time     // when it was put together (after any hole before it)
 	Held      time.Duration // how long lip sync held it
+	Sync      SyncInfo      // how it was timed against the voice
 	Decode    time.Duration // how long it took to decode
 	Key       bool
 }
@@ -429,14 +434,82 @@ func VideoTracks(rm rtc.Room) []VideoTrackStats {
 	return out
 }
 
-// srClock maps a track's RTP timestamps to the sender's wall clock (NTP),
-// from its sender reports.
+// srClock maps a track's RTP timestamps to a clock: the receiver's, from
+// when its packets came (arrived: when each timestamp would have come with
+// the least delay seen lately); and the sender's wall clock (NTP), from its
+// sender reports. A person's voice and video compare on either clock, both
+// by arrivals or both by reports: their packets cross the same network, so
+// the least delay is the same for both.
+//
+// Lip sync goes by arrivals. They're there from the first packets, where
+// reports come through LiveKit only seconds in (frames led the voice by
+// 40–55 ms until then); and they're steadier: a sender report (pion's)
+// stamps the last packet written, so a video's maps its frame's capture
+// time to when the frame came out of the encoder, 1–13 ms later from one
+// report to the next (one every 3 s through LiveKit; a frame after a
+// keyframe more), where the least delay over a window takes the quickest.
+// The voice's reports and arrivals agreed within a millisecond.
 type srClock struct {
-	mu   sync.Mutex
-	ok   bool
-	rtp  uint32
-	ntp  time.Duration // since 1900
-	rate float64
+	mu  sync.Mutex
+	ok  bool
+	rtp uint32
+	ntp time.Duration // since 1900
+
+	// The arrival clock: timestamps unwrapped (ext, the last one's), and
+	// the earliest arrival seen less the time its timestamp stands for,
+	// in this window and the one before.
+	arrOK     bool
+	rate      float64
+	last      uint32
+	ext       int64
+	win       time.Time
+	cur, prev time.Time
+	prevOK    bool
+}
+
+// arrWindow is how long the arrival clock's least delay is kept: long
+// enough that a few packets come with none of the network's jitter, short
+// enough to forget a timestamp that jumped, or clocks that drifted.
+const arrWindow = 2 * time.Second
+
+// arrived notes that the packet at ts came at at.
+func (c *srClock) arrived(ts uint32, at time.Time, rate float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.arrOK {
+		c.arrOK, c.rate, c.last, c.ext = true, rate, ts, int64(ts)
+		c.win, c.cur = at, at.Add(-c.span(c.ext))
+		return
+	}
+	c.ext += int64(int32(ts - c.last))
+	c.last = ts
+	base := at.Add(-c.span(c.ext))
+	if at.Sub(c.win) >= arrWindow {
+		c.prev, c.prevOK = c.cur, true
+		c.win, c.cur = at, base
+	} else if base.Before(c.cur) {
+		c.cur = base
+	}
+}
+
+// span is how long ext timestamp units are.
+func (c *srClock) span(ext int64) time.Duration {
+	return time.Duration(float64(ext) / c.rate * float64(time.Second))
+}
+
+// arrivedAt is when, on the receiver's clock, the sample at ts would have
+// come with the least delay seen.
+func (c *srClock) arrivedAt(ts uint32) (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.arrOK {
+		return time.Time{}, false
+	}
+	base := c.cur
+	if c.prevOK && c.prev.Before(base) {
+		base = c.prev
+	}
+	return base.Add(c.span(c.ext + int64(int32(ts-c.last)))), true
 }
 
 // read is the publication's RTCP: sender reports set the mapping.
@@ -467,34 +540,80 @@ func (c *srClock) at(ts uint32, rate float64) (time.Duration, bool) {
 	return c.ntp + time.Duration(d*float64(time.Second)), true
 }
 
+// voiceSent is how long after its first sample a voice packet goes out: a
+// whole 20 ms Opus frame is captured first. Both lip-sync clocks place a
+// voice timestamp that much late (sender reports are stamped as packets
+// are written; arrivals come after the writes), where a video timestamp
+// is its frame's capture time, placed late only by the encoding (a few
+// ms, about what Opus's own delay puts the voice behind: they cancel).
+// Without it every frame showed about 18 ms before its sound.
+const voiceSent = 20 * time.Millisecond
+
+// SyncInfo is how a video frame was timed against its sender's voice.
+type SyncInfo struct {
+	// How: "arrivals" (packets' arrival), "reports" (sender reports), or
+	// empty: shown as decoded (no voice playing, nothing to compare by, or
+	// due further off than maxHold).
+	How string
+	// How long after the voice's playing position the frame was taken, by
+	// each clock (where there is one).
+	Reports, Arrivals     time.Duration
+	ReportsOK, ArrivalsOK bool
+}
+
 // syncDue is when a video frame of t at RTP timestamp ts should be shown so
 // that it meets the same person's audio as it's heard; false when there's
-// nothing to sync with (no audio playing, no sender reports yet, or clocks
-// too far apart).
-func (r *room) syncDue(t *videoTrack, ts uint32) (time.Time, bool) {
-	vAt, ok := t.sr.at(ts, 90000)
-	if !ok {
-		return time.Time{}, false
-	}
+// nothing to sync with (no audio playing, no clock both tracks have, or
+// clocks too far apart).
+func (r *room) syncDue(t *videoTrack, ts uint32) (time.Time, SyncInfo, bool) {
+	var si SyncInfo
 	a := r.audioOf(t.who)
 	if a == nil {
-		return time.Time{}, false
+		return time.Time{}, si, false
 	}
 	pts, pulled, ok := a.buf.Playing()
 	if !ok || time.Since(pulled) > audioStale {
-		return time.Time{}, false
+		return time.Time{}, si, false
 	}
-	aAt, ok := a.sr.at(pts, 48000)
+	gap, si, ok := syncGap(&t.sr, &a.sr, ts, pts)
 	if !ok {
-		return time.Time{}, false
+		return time.Time{}, si, false
 	}
 	// The audio at pts is heard at pulled plus the speaker's delay; the
 	// frame is due as far after that as it was taken after pts.
-	due := pulled.Add(r.speakerDelay() + (vAt - aAt))
+	due := pulled.Add(r.speakerDelay() + gap)
 	if d := time.Until(due); d > maxHold {
-		return time.Time{}, false
+		si.How = ""
+		return time.Time{}, si, false
 	}
-	return due, true
+	return due, si, true
+}
+
+// syncGap is how long after the voice's sample at ats the video frame at
+// vts was taken: by arrivals, else (no packets of one yet) by sender
+// reports; SyncInfo has both. Either clock places a voice timestamp a
+// packet late (voiceSent), which the gap takes off.
+func syncGap(v, a *srClock, vts, ats uint32) (time.Duration, SyncInfo, bool) {
+	var si SyncInfo
+	if vAt, ok := v.at(vts, 90000); ok {
+		if aAt, ok := a.at(ats, 48000); ok {
+			si.Reports, si.ReportsOK = vAt-aAt+voiceSent, true
+		}
+	}
+	if vAt, ok := v.arrivedAt(vts); ok {
+		if aAt, ok := a.arrivedAt(ats); ok {
+			si.Arrivals, si.ArrivalsOK = vAt.Sub(aAt)+voiceSent, true
+		}
+	}
+	switch {
+	case si.ArrivalsOK:
+		si.How = "arrivals"
+		return si.Arrivals, si, true
+	case si.ReportsOK:
+		si.How = "reports"
+		return si.Reports, si, true
+	}
+	return 0, si, false
 }
 
 // audioOf is a participant's audio track (its first).

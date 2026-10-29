@@ -248,8 +248,28 @@ func (t *remote) read(track *webrtc.TrackRemote, ext int) {
 		if t.arrival != nil {
 			t.arrival(t.who, p.SequenceNumber, p.Timestamp, len(p.Payload), now)
 		}
+		if !madeUpSilence(p.Payload) {
+			t.sr.arrived(p.Timestamp, now, opus.SampleRate)
+		}
 		t.buf.Push(jitter.Packet{Seq: p.SequenceNumber, TS: p.Timestamp, Payload: p.Payload}, now)
 	}
+}
+
+// madeUpSilence says whether an Opus payload is the silent frame LiveKit
+// makes up for a track that hasn't sent yet (TOC f8, then ff fe and
+// zeros, 80 bytes): its timestamps run slower than the clock, so its
+// arrivals would skew the lip-sync clock. No encoder writes a frame of
+// zeros.
+func madeUpSilence(p []byte) bool {
+	if len(p) < 8 || p[0] != 0xf8 || p[1] != 0xff || p[2] != 0xfe {
+		return false
+	}
+	for _, b := range p[3:] {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // unsubscribed stops playing a track we're no longer sent.

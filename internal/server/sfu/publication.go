@@ -25,8 +25,9 @@ var published atomic.Int64
 // A voice is read from its TrackRemote (or written by an in-process
 // participant's LocalTrack) and each packet written to every down track as
 // it arrives. The track's sender reports are kept, for the down tracks'
-// own (downTrack.report). A video's layers are read and dropped for now:
-// forwarding them is the media server's step 3.
+// own (downTrack.report). A video's layers are each read from a stream of
+// their own (layers.go), and every packet goes to every down track, whose
+// forwarder sends its viewer one layer.
 type publication struct {
 	sid, cid string
 	n        int64
@@ -38,10 +39,14 @@ type publication struct {
 	muted    atomic.Bool
 	level    audioLevel // a voice's, from the RFC 6464 levels its packets carry
 
+	// layers are a video's, largest first, as published (fixed); lmu
+	// guards their streams' SSRCs, sender reports and keyframe requests.
+	layers []*layer
+	lmu    sync.Mutex
+
 	mu     sync.Mutex
-	downs  []*downTrack                   // replaced, never changed in place: forward reads it unlocked
-	src    any                            // where the voice being forwarded comes from: a *webrtc.TrackRemote, or a *LocalTrack
-	layers map[string]*webrtc.TrackRemote // a video's, by rid
+	downs  []*downTrack // replaced, never changed in place: forward reads it unlocked
+	src    any          // where the voice being forwarded comes from: a *webrtc.TrackRemote, or a *LocalTrack
 	closed bool
 
 	srMu sync.Mutex
@@ -66,6 +71,7 @@ func newPublication(owner *participant, sid string, req signal.Publish) *publica
 	}
 	if req.Kind == signal.Video {
 		pub.kind, pub.codec = webrtc.RTPCodecTypeVideo, codecs.H264
+		pub.layers = newLayers(req)
 	}
 	pub.muted.Store(req.Muted)
 	return pub
@@ -196,30 +202,6 @@ func (pub *publication) report() senderReport {
 	pub.srMu.Lock()
 	defer pub.srMu.Unlock()
 	return pub.sr
-}
-
-// receiveLayer reads one layer of a video and drops it (step 3 forwards
-// layers), its RTCP too: pion's interceptors act on what's read, so the
-// publisher gets receiver reports and the NACKs it needs.
-func (pub *publication) receiveLayer(tr *webrtc.TrackRemote, rcv *webrtc.RTPReceiver) {
-	rid := tr.RID()
-	known := false
-	for _, l := range pub.req.Layers {
-		known = known || l.RID == rid
-	}
-	if !known {
-		pub.owner.log.Warn("sfu: a layer that wasn't published", "track", pub.sid, "rid", rid)
-		drain(tr, rcv)
-		return
-	}
-	pub.mu.Lock()
-	if pub.layers == nil {
-		pub.layers = map[string]*webrtc.TrackRemote{}
-	}
-	pub.layers[rid] = tr
-	pub.mu.Unlock()
-	pub.owner.log.Debug("sfu: receiving a layer", "track", pub.sid, "rid", rid)
-	drain(tr, rcv)
 }
 
 // drain reads a stream and its RTCP until it ends.

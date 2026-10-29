@@ -265,6 +265,20 @@ func (r *room) mute(p *participant, sid string, muted bool) error {
 	return nil
 }
 
+// settings is how p wants a video it's sent (its size, or off). Settings
+// for a track p isn't sent (gone meanwhile), or a voice, are ignored: an
+// error would fail whatever p waits on.
+func (r *room) settings(p *participant, st signal.Settings) {
+	r.mu.Lock()
+	dt := p.downs[st.SID]
+	r.mu.Unlock()
+	if dt == nil || dt.fwd == nil {
+		p.log.Debug("sfu: settings for a video not sent", "track", st.SID)
+		return
+	}
+	dt.settings(st.W, st.H, st.Enabled, time.Now())
+}
+
 // subscribeLocked has sub sent pub: a down track, fed by pub from now on,
 // that goes on sub's down connection at its next offer, or, for an
 // in-process subscriber, whose Voice it's handed (after the events
@@ -308,8 +322,8 @@ func (p *participant) pubsLocked() []*publication {
 	return pubs
 }
 
-// run is the room's clock: sender reports on the down tracks, and who's
-// talking.
+// run is the room's clock: sender reports on the down tracks, videos'
+// layers paused, viewers who never said a size, and who's talking.
 func (r *room) run() {
 	t := time.NewTicker(tick)
 	defer t.Stop()
@@ -331,7 +345,13 @@ func (r *room) run() {
 			pubs = append(pubs, p.pubsLocked()...)
 		}
 		r.mu.Unlock()
+		for _, pub := range pubs {
+			if len(pub.layers) > 0 {
+				pub.checkLayers(now)
+			}
+		}
 		for _, dt := range dts {
+			dt.tick(now)
 			dt.reportIfDue(now)
 		}
 		if now.Sub(lastSpeakers) >= speakersEvery-tick/2 {

@@ -268,7 +268,12 @@ func (p *participant) handle(e signal.Envelope) error {
 		}
 		return r.mute(p, req.SID, req.Muted)
 	case signal.KindSettings:
-		return nil // video comes with step 3
+		var st signal.Settings
+		if err := e.Decode(&st); err != nil {
+			return err
+		}
+		r.settings(p, st)
+		return nil
 	}
 	return fmt.Errorf("unknown message")
 }

@@ -158,8 +158,11 @@ type Mute struct {
 
 // Settings is how a viewer wants one video track: the size it's shown at,
 // in pixels (the server sends the smallest layer at least that size, or the
-// largest), or nothing (Enabled false). A video track sends nothing until
-// its first settings.
+// largest; a layer its publisher has paused is stood in for by the nearest
+// that runs), or nothing (Enabled false, or no size). A video track sends
+// nothing until its first settings, or for a quarter of a second after
+// it's on the receive connection: a viewer that says nothing by then is
+// sent the largest layer.
 type Settings struct {
 	SID     string `json:"sid"`
 	W       int    `json:"w"`

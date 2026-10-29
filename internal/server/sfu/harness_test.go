@@ -131,6 +131,16 @@ type heard struct {
 	packets   int
 	ended     bool // the track's reads ended: it came off the connection
 	srs       []srSeen
+	vids      []vidPkt // a video's packets, in the order they came
+}
+
+// vidPkt is a video packet as heard.
+type vidPkt struct {
+	seq     uint16
+	ts      uint32
+	marker  bool
+	payload []byte
+	at      time.Time
 }
 
 // srSeen is a sender report as heard (or sent), and when.
@@ -259,6 +269,9 @@ func (c *testClient) read(h *heard) {
 		h.packets++
 		if h.firstAt.IsZero() {
 			h.firstAt = now
+		}
+		if h.kind == signal.Video {
+			h.vids = append(h.vids, vidPkt{p.SequenceNumber, p.Timestamp, p.Marker, slices.Clone(p.Payload), now})
 		}
 		if h.kind == signal.Audio {
 			who, n, ok := parseFrame(p.Payload)

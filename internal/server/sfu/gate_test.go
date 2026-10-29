@@ -484,9 +484,14 @@ func TestVideoPublish(t *testing.T) {
 	}
 	pub := ts.s.room("r").participant("a").publication(sid)
 	waitFor(t, wait, "the SFU to receive the three layers", func() bool {
-		pub.mu.Lock()
-		defer pub.mu.Unlock()
-		return len(pub.layers) == 3
+		pub.lmu.Lock()
+		defer pub.lmu.Unlock()
+		for _, l := range pub.layers {
+			if l.ssrc == 0 {
+				return false
+			}
+		}
+		return true
 	})
 	time.Sleep(time.Second)
 	close(stop)
@@ -495,8 +500,10 @@ func TestVideoPublish(t *testing.T) {
 	for _, x := range []*testClient{b, c} {
 		checkRun(t, x.id+" hearing a through the camera's negotiation", x.framesFrom("a"), readyAt, sent["a"]-1)
 		x.mu.Lock()
+		// The stand-in frames carry no SPS, so none starts a keyframe
+		// the forwarder could begin at (video_test.go sends real ones).
 		if h := x.fromLocked("a", signal.Video); h == nil || h.packets != 0 {
-			t.Errorf("%s: a's camera sent video (forwarding is step 3)", x.id)
+			t.Errorf("%s: sent frames that aren't a keyframe's", x.id)
 		}
 		x.mu.Unlock()
 	}
@@ -529,10 +536,13 @@ func TestPublishEstimator(t *testing.T) {
 		t.Fatalf("%d estimators by the time Join returned, want the publish connection's", n)
 	}
 	start := time.Now()
-	sp, _ := publishVoice(t, a, 25)
+	cam := publishCamera(t, a) // video: the voice isn't counted by congestion control
 	// The SFU's TWCC feedback moves the estimate off where it began.
 	waitFor(t, wait, "the estimate to move", func() bool { return ests[0].GetTargetBitrate() != 1_000_000 })
-	t.Logf("estimate %d bps %v after publishing (%d frames sent)", ests[0].GetTargetBitrate(), time.Since(start).Round(time.Millisecond), sp.sent.Load())
+	cam.mu.Lock()
+	frames := cam.frame
+	cam.mu.Unlock()
+	t.Logf("estimate %d bps %v after publishing (%d frames sent)", ests[0].GetTargetBitrate(), time.Since(start).Round(time.Millisecond), frames)
 	if n := count(); n != 1 {
 		t.Errorf("%d estimators after publishing", n)
 	}

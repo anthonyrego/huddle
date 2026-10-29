@@ -36,7 +36,8 @@ type emitFunc func(seq uint16, h *rtp.Header, payload []byte)
 // frames newer than the last it showed. Waiting for a newer keyframe
 // instead would never end if the lag stayed longer than a frame.
 //
-// Not safe for concurrent use: the down track calls it from one goroutine.
+// Not safe for concurrent use: the down track calls it under its lock (each
+// layer arrives on a goroutine of its own).
 type forwarder struct {
 	target  int // the layer wanted; -1: none (the track is off)
 	current int // the layer being sent; -1: none
@@ -156,4 +157,22 @@ func (f *forwarder) cutOver(emit emitFunc, now time.Time) {
 	for _, p := range held {
 		f.send(f.current, &p.h, p.payload, now, emit)
 	}
+}
+
+// restart forgets layer's place in its stream: the publisher sent it again
+// on a new stream, whose sequence numbers start over. If it's the layer
+// being sent, the target's next keyframe is waited for (askKey) and cut
+// over to at once.
+func (f *forwarder) restart(layer int) (askKey bool) {
+	if f.prev.layer == layer {
+		f.prev = segment{layer: -1}
+	}
+	if f.target == layer {
+		f.pending = nil
+	}
+	if f.current != layer {
+		return false
+	}
+	f.current, f.open = -1, false
+	return f.target >= 0
 }

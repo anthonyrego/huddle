@@ -14,6 +14,7 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/anthonyrego/huddle/internal/rtc"
+	"github.com/anthonyrego/huddle/internal/rtc/icept"
 	"github.com/anthonyrego/huddle/internal/video"
 )
 
@@ -207,12 +208,17 @@ func (r *room) unsubscribedVideo(sid string) {
 func (t *videoTrack) read() {
 	defer close(t.aus)
 	asm := newAssembler()
+	pktHook, unitHook := t.r.cfg.VideoPacket, t.r.cfg.VideoUnit
 	for {
-		p, _, err := t.track.ReadRTP()
+		p, attr, err := t.track.ReadRTP()
 		if err != nil {
 			return
 		}
 		now := time.Now()
+		if pktHook != nil {
+			wire, _ := icept.Arrived(attr)
+			pktHook(t, p, wire, now)
+		}
 		for _, u := range asm.push(p, now) {
 			t.mu.Lock()
 			t.st.Units++
@@ -221,14 +227,20 @@ func (t *videoTrack) read() {
 				t.st.Gaps++
 				t.waitKey, t.lostAt = true, now
 			}
-			if t.waitKey && !u.key {
+			skip := t.waitKey && !u.key
+			if skip {
 				t.st.Skipped++
-				t.mu.Unlock()
+			} else {
+				t.waitKey = false
+			}
+			t.mu.Unlock()
+			if unitHook != nil {
+				unitHook(t, VideoUnitInfo{RTP: u.ts, Key: u.key, Gap: u.gap, Skipped: skip, Last: u.last, At: u.at})
+			}
+			if skip {
 				t.askKey()
 				continue
 			}
-			t.waitKey = false
-			t.mu.Unlock()
 			select {
 			case t.aus <- u:
 			default: // the decoder is far behind: start again at a keyframe
@@ -276,7 +288,9 @@ func (t *videoTrack) play() {
 				held = wait
 			}
 		}
+		decStart := time.Now()
 		ok, err := t.dec.Decode(u.data, &f)
+		decTook := time.Since(decStart)
 		if err != nil {
 			t.mu.Lock()
 			t.st.DecodeErrs++
@@ -325,17 +339,29 @@ func (t *videoTrack) play() {
 			slog.Info("video: frame", "identity", t.who, "kind", t.kind, "w", f.W, "h", f.H, "first", first, "sinceSubscribed", now.Sub(t.subAt).Round(time.Millisecond))
 		}
 		if hook := t.r.cfg.VideoFrame; hook != nil {
-			hook(t, f, VideoFrameInfo{RTP: u.ts, Received: u.at, Held: held, Key: u.key})
+			hook(t, f, VideoFrameInfo{RTP: u.ts, Received: u.last, Assembled: u.at, Held: held, Decode: decTook, Key: u.key})
 		}
 	}
 }
 
 // VideoFrameInfo is what a tool hears about each frame shown.
 type VideoFrameInfo struct {
-	RTP      uint32        // its RTP timestamp
-	Received time.Time     // when its last packet came
-	Held     time.Duration // how long lip sync held it
-	Key      bool
+	RTP       uint32        // its RTP timestamp
+	Received  time.Time     // when its last packet came
+	Assembled time.Time     // when it was put together (after any hole before it)
+	Held      time.Duration // how long lip sync held it
+	Decode    time.Duration // how long it took to decode
+	Key       bool
+}
+
+// VideoUnitInfo is what a trace hears about each access unit put together.
+type VideoUnitInfo struct {
+	RTP     uint32
+	Key     bool
+	Gap     bool      // units were lost before it
+	Skipped bool      // dropped: the decoder waits for a keyframe
+	Last    time.Time // when its last packet came
+	At      time.Time // when it was put together
 }
 
 // Stats are the track's numbers so far.

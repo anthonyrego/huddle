@@ -30,7 +30,7 @@ import (
 // it gave up on, so the keyframe that follows a lost packet isn't lost
 // with it.
 type assembler struct {
-	pkts    map[uint16]*rtp.Packet
+	pkts    map[uint16]*heldPkt
 	next    uint16 // the first packet of the next unit
 	newest  uint16
 	synced  bool      // next is the start of a unit
@@ -40,13 +40,20 @@ type assembler struct {
 	Cut     int       // units dropped because the next began before their end
 }
 
+// heldPkt is a packet waiting to go out in a unit, and when it came.
+type heldPkt struct {
+	*rtp.Packet
+	at time.Time
+}
+
 // au is one access unit.
 type au struct {
 	data []byte
 	ts   uint32 // RTP timestamp, 90 kHz
 	key  bool
 	gap  bool      // units were lost before it
-	at   time.Time // when its last packet came
+	last time.Time // when the last of its packets came
+	at   time.Time // when it was put together (it may have waited for a hole before it)
 }
 
 // lossWait is how long a missing packet is waited for.
@@ -55,7 +62,7 @@ const lossWait = 250 * time.Millisecond
 // maxHeld bounds the packets held while waiting.
 const maxHeld = 4000
 
-func newAssembler() *assembler { return &assembler{pkts: map[uint16]*rtp.Packet{}} }
+func newAssembler() *assembler { return &assembler{pkts: map[uint16]*heldPkt{}} }
 
 // after reports whether sequence number a comes after b.
 func after(a, b uint16) bool { return int16(a-b) > 0 }
@@ -72,7 +79,7 @@ func (a *assembler) push(p *rtp.Packet, now time.Time) []au {
 			// begun before we joined.
 			a.next = seq + 1
 		default:
-			a.pkts[seq] = p
+			a.pkts[seq] = &heldPkt{p, now}
 			return nil
 		}
 		a.newest, a.synced = seq, true
@@ -85,7 +92,7 @@ func (a *assembler) push(p *rtp.Packet, now time.Time) []au {
 			}
 		}
 		if a.next == seq {
-			a.pkts[seq] = p
+			a.pkts[seq] = &heldPkt{p, now}
 		}
 		return a.drain(now)
 	}
@@ -95,7 +102,7 @@ func (a *assembler) push(p *rtp.Packet, now time.Time) []au {
 	if _, dup := a.pkts[seq]; dup {
 		return nil
 	}
-	a.pkts[seq] = p
+	a.pkts[seq] = &heldPkt{p, now}
 	if after(seq, a.newest) {
 		a.newest = seq
 	}
@@ -212,6 +219,9 @@ func (a *assembler) unit(first, last uint16, now time.Time) au {
 	for s := first; ; s++ {
 		p := a.pkts[s]
 		delete(a.pkts, s)
+		if p.at.After(u.last) {
+			u.last = p.at
+		}
 		if len(p.Payload) > 0 {
 			u.ts = p.Timestamp
 			if b, err := dp.Unmarshal(p.Payload); err == nil {

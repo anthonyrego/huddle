@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/pion/rtcp"
+	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/anthonyrego/huddle/internal/jitter"
@@ -60,6 +61,13 @@ type Connector struct {
 	// shown, on the track's goroutine (a measuring hook: huddle video).
 	// It must not keep the frame.
 	VideoFrame func(t rtc.VideoTrack, f video.Frame, info VideoFrameInfo)
+	// VideoPacket and VideoUnit, when set, are told of every remote video
+	// packet as it's read (wire: when it came off the network, before a
+	// Sim's delay; zero without one) and every access unit as it's put
+	// together, on the track's reading goroutine (a debug trace: huddle
+	// video -trace). VideoPacket must not keep the packet.
+	VideoPacket func(t rtc.VideoTrack, p *rtp.Packet, wire, at time.Time)
+	VideoUnit   func(t rtc.VideoTrack, u VideoUnitInfo)
 }
 
 // NewSim is a Connector.Sim with fixed settings and a fresh seed per stream.

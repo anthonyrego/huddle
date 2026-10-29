@@ -455,3 +455,49 @@ func TestPlaying(t *testing.T) {
 		}
 	}
 }
+
+// TestPlayingAfterSilence: a pull that skips the rest of a DTX silence and
+// plays the next talk spurt says where it ended up, not where it began. The
+// spurt's first packets coming at once (behind a narrow uplink's queue) let
+// one pull do both, and lip sync, given the silence's position as playing
+// now, held a video frame 350 ms (step 5).
+func TestPlayingAfterSilence(t *testing.T) {
+	var s []sent
+	add := func(k int, seq uint16, p []byte, at time.Time) {
+		s = append(s, sent{pkt: Packet{Seq: seq, TS: uint32(k * opus.FrameSamples), Payload: p}, sentAt: t0.Add(time.Duration(k) * 20 * time.Millisecond), at: at})
+	}
+	for k := range 10 {
+		add(k, uint16(k), payload(k), t0.Add(time.Duration(k)*20*time.Millisecond+5*time.Millisecond))
+	}
+	add(10, 10, dtxPayload(), t0.Add(205*time.Millisecond))
+	// 300 ms later the next spurt, its first three packets at once.
+	for k := 25; k < 40; k++ {
+		at := t0.Add(time.Duration(max(k, 27))*20*time.Millisecond + 5*time.Millisecond)
+		add(k, uint16(k-14), payload(k), at)
+	}
+	b := New(fakeDec{}, Config{})
+	out := make([]float32, 480)
+	checked := 0
+	for now := t0; now.Before(t0.Add(time.Second)); now = now.Add(10 * time.Millisecond) {
+		for len(s) > 0 && !s[0].at.After(now) {
+			b.Push(s[0].pkt, s[0].at)
+			s = s[1:]
+		}
+		b.Pull(out)
+		v := out[len(out)-1]
+		if v <= 0 {
+			continue
+		}
+		// The pull's last sample came from packet k: Playing must put it
+		// there.
+		k := int64(v) - 1
+		ts, _, ok := b.Playing()
+		if last := int64(ts) + int64(len(out)) - 1; !ok || last < k*opus.FrameSamples || last >= (k+1)*opus.FrameSamples {
+			t.Fatalf("at %v the pull ended in packet %d, but playing says %d (sample %d)", now.Sub(t0), k, ts, last)
+		}
+		checked++
+	}
+	if checked < 40 {
+		t.Fatalf("checked %d pulls", checked)
+	}
+}

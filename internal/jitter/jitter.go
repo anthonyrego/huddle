@@ -108,8 +108,9 @@ type Buffer struct {
 	jitter      float64 // RFC 3550, seconds
 	target      time.Duration
 
-	// playingTS and playingAt are where the last pull began: the RTP
-	// timestamp of its first sample, and when (for lip sync).
+	// playingTS and playingAt are where the last pull began, counted back
+	// from where it ended: the RTP timestamp of its first sample, had it
+	// played without a skip, and when (for lip sync).
 	playingTS int64
 	playingAt time.Time
 
@@ -262,16 +263,14 @@ func (b *Buffer) heldAfter(seq int64) *entry {
 func (b *Buffer) Pull(out []float32) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	marked := false
-	var ts int64
 	var at time.Time
 	for filled := 0; filled < len(out); {
 		if !b.started && !b.start() {
 			clear(out[filled:])
 			return
 		}
-		if !marked {
-			ts, at, marked = b.playTS, time.Now(), true
+		if at.IsZero() {
+			at = time.Now()
 		}
 		if len(b.pending) > 0 {
 			k := copy(out[filled:], b.pending)
@@ -287,8 +286,11 @@ func (b *Buffer) Pull(out []float32) {
 	}
 	// Through DTX silence the position stands still (and jumps at the next
 	// talk spurt), so only a pull of the stream itself says where it is.
+	// Counted back from where the pull ended: one that skips the rest of a
+	// silence and plays the next spurt began at the silence's position,
+	// hundreds of ms before what it plays now.
 	if !b.inDTX {
-		b.playingTS, b.playingAt = ts, at
+		b.playingTS, b.playingAt = b.playTS-int64(len(out)), at
 	}
 }
 
@@ -457,8 +459,9 @@ func (b *Buffer) Stats() Stats {
 }
 
 // Playing is where the last pull of the stream itself (not an underrun,
-// not DTX silence) began: the RTP timestamp of the first sample it took,
-// and when. ok is false before the stream has started playing. A video
+// not DTX silence) began: the RTP timestamp of its first sample (counted
+// back from where it ended, so a skip inside the pull doesn't leave it
+// behind), and when. ok is false before the stream has started playing. A video
 // track holds its frames against this (lip sync), going on from it on the
 // wall clock through silences.
 func (b *Buffer) Playing() (ts uint32, at time.Time, ok bool) {

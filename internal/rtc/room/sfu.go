@@ -61,8 +61,11 @@ func dialSFU(ctx context.Context, j rtc.Join, cfg dialConfig, ev transportEvents
 	opts := sfuclient.Options{
 		Publish:   append(slices.Clone(cfg.send), ccf),
 		Subscribe: slices.Clone(cfg.recv),
-		SendOnly:  !cfg.subscribe,
-		Loopback:  loopbackURL(j.URL),
+		// The receive side's simulation drops after SRTP; the SFU's
+		// resends would read as replays (sfuclient.Options).
+		NoReplayProtection: len(cfg.recv) > 0,
+		SendOnly:           !cfg.subscribe,
+		Loopback:           loopbackURL(j.URL),
 	}
 	t.ctx, t.cancel = context.WithCancel(context.Background())
 	s, err := sfuclient.Join(ctx, j.URL, j.Token, opts, t.events(ev))

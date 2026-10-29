@@ -167,6 +167,73 @@ func TestAllocateResumeRefused(t *testing.T) {
 	})
 }
 
+// A smaller layer wanted again while a larger one of its video runs starts
+// at its floor at once, even when it can't resume as an unwanted layer
+// does (the estimate dropped since it paused), and never pauses the larger
+// one: waiting there, it took a running 720p down with it, counted as a
+// failed try, for a phase with GCC's estimate at 5-8 Mbps.
+func TestAllocateUnderARunningLayer(t *testing.T) {
+	now := time.Now()
+	a, cam := running(t, now)
+	now = now.Add(5 * time.Second)
+	a.want(cam, []bool{true, false, false})
+	a.allocate(3_000_000, 2_300_000, now)
+	checkStates(t, a, cam, "only 720p wanted", []int{1_700_000, 0, 0}, []string{"-", "unwanted", "unwanted"})
+	dropped := now.Add(2 * time.Second)
+	a.allocate(2_400_000, 1_700_000, dropped) // under 0.85 of 3 Mbps; 720p still fits
+	if a.dropAt.IsZero() || a.bitrates(cam, 3)[0] == 0 {
+		t.Fatalf("the drop: at %v, %v", a.dropAt, a.bitrates(cam, 3))
+	}
+	at := dropped.Add(10 * time.Second)
+	a.allocate(4_000_000, 1_700_000, at)
+	a.want(cam, []bool{true, false, true})
+	a.allocate(4_000_000, 1_700_000, at.Add(time.Second))
+	checkStates(t, a, cam, "180p wanted beside 720p", []int{1_700_000, 0, 64_000}, []string{"-", "unwanted", "-"})
+	if hold := a.layerOf(cam, 0).holdUntil; !hold.IsZero() {
+		t.Fatalf("720p given a hold until %v", hold.Sub(at))
+	}
+	if w := a.whys(cam, 3); w[2] != "wanted" {
+		t.Fatalf("why: %v", w)
+	}
+	// With no room for 180p's floor beside what runs, it waits; 720p, over
+	// it, can't run either.
+	b, cam2 := running(t, now)
+	b.want(cam2, []bool{true, false, false})
+	b.allocate(3_000_000, 2_300_000, now)
+	b.allocate(2_400_000, 1_700_000, dropped)
+	b.want(cam2, []bool{true, false, true})
+	b.allocate(100_000, 1_700_000, at)
+	checkStates(t, b, cam2, "180p wanted at 100 kbps", []int{0, 0, 0}, []string{"bandwidth", "unwanted", "bandwidth"})
+}
+
+// Video is paced from the cap as though the layers nobody wants still
+// sent what they ran at, so a 720p frame alone leaves as fast as with
+// every layer running; never over GCC's estimate.
+func TestAllocatePace(t *testing.T) {
+	now := time.Now()
+	a, cam := running(t, now)
+	now = now.Add(5 * time.Second)
+	a.allocate(4_000_000, 2_350_000, now)
+	if got, want := a.pace(4_000_000, 2_350_000), 3_625_000; got != want {
+		t.Fatalf("every layer running: paced from %d, want %d", got, want)
+	}
+	a.want(cam, []bool{true, false, false})
+	a.allocate(4_000_000, 1_740_000, now.Add(time.Second))
+	if got, want := a.pace(4_000_000, 1_740_000), 3_625_000; got != want {
+		t.Fatalf("only 720p wanted: paced from %d, want %d", got, want)
+	}
+	if got := a.pace(2_000_000, 1_740_000); got != 2_000_000 {
+		t.Fatalf("at 2 Mbps: paced from %d", got)
+	}
+	// Wanted again, 180p sends and counts as sent; 360p, still unwanted,
+	// as what it ran at.
+	a.want(cam, []bool{true, false, true})
+	a.allocate(4_000_000, 1_740_000, now.Add(2*time.Second))
+	if got, want := a.pace(4_000_000, 1_804_000), 3_481_000; got != want {
+		t.Fatalf("180p back: paced from %d, want %d", got, want)
+	}
+}
+
 // A wanted layer the estimate can't carry has the next smaller one stand
 // in for it, and a probe for it rides the highest wanted layer running;
 // once it runs, the stand-in, unwanted, pauses.

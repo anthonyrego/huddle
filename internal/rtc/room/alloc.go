@@ -47,8 +47,12 @@ import (
 // before, GCC's estimate (not the cap) leaves resumeMargin times its
 // floor, and the estimate hasn't dropped since it paused: the link carried
 // it then and nothing says it can't now. (GCC's estimate climbs while less
-// is sent, so the estimate alone wouldn't say so.) Otherwise it takes the
-// probe path, like a layer the estimate paused. A probe's carrier is the
+// is sent, so the estimate alone wouldn't say so.) A layer wanted under a
+// larger one of its video that runs starts at its floor at once too, if
+// the estimate leaves resumeMargin times it: the larger one shows the link
+// carries more, and gives up what the smaller one takes (waiting, it would
+// pause the larger one, as a layer the estimate can't carry does).
+// Otherwise it takes the probe path, like a layer the estimate paused. A probe's carrier is the
 // highest running layer needed, and a layer nobody needs is never probed
 // for. With nothing running to carry a probe (no layer needed runs), the
 // lowest needed layer starts at its floor once its hold is over and the
@@ -198,6 +202,34 @@ func (a *allocator) need() {
 	}
 }
 
+// pace is the estimate video is paced from: the cap's, counting each
+// layer paused because nobody wanted it at what it ran at, as though it
+// still did. The cap follows what's sent: with a camera's smaller layers
+// paused, a 720p frame alone, paced at 1.2 times the cap, took 18 ms of
+// its 33 to leave, and capture → shown went from 20-22 ms to 27-28.
+func (a *allocator) pace(raw, sent int) int {
+	if sent == 0 || a.probe != nil {
+		return raw
+	}
+	for _, l := range a.layers {
+		if l.unwanted && l.bps == 0 {
+			sent += l.ranAt
+		}
+	}
+	return min(raw, int(capFactor*float64(sent))+capSlack)
+}
+
+// runsAbove reports whether a larger layer of l's video runs and is
+// needed.
+func (a *allocator) runsAbove(l *allocLayer) bool {
+	for _, o := range a.layers {
+		if o.pub == l.pub && o.layer < l.layer && o.bps > 0 && o.needed {
+			return true
+		}
+	}
+	return false
+}
+
 // resumable says whether a layer paused only because nobody wanted it may
 // come back at its floor at once, with leftRaw of GCC's estimate left.
 func (a *allocator) resumable(l *allocLayer, leftRaw int) bool {
@@ -252,6 +284,13 @@ func (a *allocator) allocate(raw, sent int, now time.Time) int {
 			l.since, l.probed = now, true
 			l.bps = l.floor()
 			l.unwanted, l.why = false, "wanted"
+		case was == 0 && a.runsAbove(l) && leftRaw >= int(resumeMargin*float64(l.floor())):
+			// A larger layer of its video runs: the link carries more than
+			// this one's floor, and lowest first, the larger makes room.
+			// (Waiting for a probe, it would pause the larger one.)
+			l.since, l.probed = now, true
+			l.bps = l.floor()
+			l.why = "wanted"
 		case was > 0 && l.free(now):
 			// Just started: GCC's estimate (not the cap) says whether it fits.
 			switch {

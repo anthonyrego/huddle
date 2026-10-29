@@ -346,7 +346,7 @@ func (v *videoCC) allocate() {
 		sets = append(sets, set{p, bps, v.alloc.whys(p, len(p.layers))})
 	}
 	est := v.est
-	pace := max(v.usable, given)
+	pace := max(v.alloc.pace(v.raw, sent), given)
 	v.mu.Unlock()
 	if est != nil {
 		est.Pacer.SetRate(pace)

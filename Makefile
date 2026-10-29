@@ -14,12 +14,13 @@ SIGN ?= -
 HUDDLE_ENV ?= $(CURDIR)/.env
 KEY = GEMINI_API_KEY="$${GEMINI_API_KEY:-$$(sed -n 's/^GEMINI_API_KEY=//p' "$(HUDDLE_ENV)" 2>/dev/null | tail -1 | tr -d "\"'")}"
 
-# This Mac's address on the LAN, which LiveKit advertises and the other Mac
-# dials. Override with LAN_IP=... when it guesses wrong.
+# This Mac's address on the LAN, which huddled's SFU (or LiveKit) advertises
+# and the other Mac dials. Override with LAN_IP=... when it guesses wrong.
 LAN_IP ?= $(shell ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo 127.0.0.1)
 
-# The dev stack (docker-compose.yml, make livekit). Dev credentials only:
-# livekit-server --dev uses devkey/secret.
+# The dev stack (docker-compose.yml; make livekit only for
+# HUDDLE_MEDIA=livekit). Dev credentials only: livekit-server --dev uses
+# devkey/secret.
 DATABASE_URL ?= postgres://huddle:huddle@127.0.0.1:5442/huddle?sslmode=disable
 TEST_DATABASE_URL ?= postgres://huddle:huddle@127.0.0.1:5442/huddle_test?sslmode=disable
 LIVEKIT_URL ?= ws://$(LAN_IP):7880
@@ -79,13 +80,15 @@ dev-up:
 dev-down:
 	docker compose down
 
-# LiveKit on this Mac, reachable from the LAN (brew install livekit).
+# LiveKit on this Mac, reachable from the LAN (brew install livekit), for
+# HUDDLE_MEDIA=livekit make server until LiveKit is deleted.
 livekit:
 	livekit-server --dev --bind 0.0.0.0 --node-ip "$(LAN_IP)"
 
 # The server on this Mac, reachable from the LAN, in dev mode. Its media
-# goes through LiveKit (make livekit), or HUDDLE_MEDIA=builtin make server
-# for its own SFU, which offers LAN_IP.
+# goes through its own SFU, which offers LAN_IP on the HTTP port's number
+# (UDP 8080), or, until LiveKit is deleted, HUDDLE_MEDIA=livekit make server
+# with make livekit.
 server: build
 	@HUDDLE_DEV=1 DATABASE_URL="$(DATABASE_URL)" HUDDLE_NODE_IP="$(LAN_IP)" LIVEKIT_URL="$(LIVEKIT_URL)" \
 		LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret $(KEY) ./build/huddled serve $(ARGS)
@@ -113,8 +116,9 @@ lan-ip:
 bot: build
 	./build/huddled bot $(word 1,$(ARGS)) -server "$(SERVER)" -room "$(ROOM)" $(wordlist 2,99,$(ARGS))
 
-# The voice gate's file-to-file runs through LiveKit (make server running):
-# click latency, and speech at 0, 5 and 10% loss with 40 ms jitter, WAVs in .dev/out.
+# The voice gate's file-to-file runs through the media server (make server
+# running): click latency, and speech at 0, 5 and 10% loss with 40 ms
+# jitter, WAVs in .dev/out.
 voice-check: build
 	./build/huddle voice-check -server "$(SERVER)" $(ARGS)
 
@@ -128,7 +132,8 @@ live-probe: build
 fixtures: build
 	./build/huddled fixtures
 
-# Scores the whiteboard on a fixture meeting against the local stack, e.g.
+# Scores the whiteboard on a fixture meeting, the whole server in-process
+# on huddled's own SFU (HUDDLE_MEDIA=livekit: through make livekit), e.g.
 # make agent-check MEETING=review [ARGS="-voice answers"]
 MEETING ?= review
 agent-check: build

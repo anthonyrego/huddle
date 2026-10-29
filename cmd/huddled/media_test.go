@@ -16,7 +16,7 @@ import (
 )
 
 func TestMediaLiveKit(t *testing.T) {
-	t.Setenv("HUDDLE_MEDIA", "")
+	t.Setenv("HUDDLE_MEDIA", "livekit")
 	t.Setenv("HUDDLE_NODE_IP", "192.0.2.7")
 	t.Setenv("LIVEKIT_URL", "ws://lk:7880")
 	t.Setenv("LIVEKIT_API_KEY", "devkey")
@@ -44,8 +44,9 @@ func TestMediaLiveKit(t *testing.T) {
 }
 
 func TestMediaBuiltin(t *testing.T) {
-	// No LiveKit needed: the SFU is huddled's, on the HTTP port's number.
-	t.Setenv("HUDDLE_MEDIA", "builtin")
+	// The default, and no LiveKit needed: the SFU is huddled's, on the HTTP
+	// port's number.
+	t.Setenv("HUDDLE_MEDIA", "")
 	t.Setenv("LIVEKIT_URL", "")
 	t.Setenv("HUDDLE_RTC_SECRET", "")
 	t.Setenv("HUDDLE_NODE_IP", "127.0.0.1")
@@ -68,7 +69,7 @@ func TestMediaBuiltin(t *testing.T) {
 		t.Fatalf("a node IP that isn't one: %v", err)
 	}
 	t.Setenv("HUDDLE_MEDIA", "carrier-pigeon")
-	if _, err := newMedia(":8080"); err == nil || !strings.Contains(err.Error(), "livekit or builtin") {
+	if _, err := newMedia(":8080"); err == nil || !strings.Contains(err.Error(), "builtin or livekit") {
 		t.Fatalf("an unknown media server: %v", err)
 	}
 }

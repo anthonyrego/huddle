@@ -123,7 +123,7 @@ func runAgentCheck(args []string) error {
 	key := os.Getenv("GEMINI_API_KEY")
 	dbURL := os.Getenv("DATABASE_URL")
 	if key == "" || dbURL == "" {
-		return errors.New("needs GEMINI_API_KEY and DATABASE_URL, and for HUDDLE_MEDIA=livekit (the default) LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET (make agent-check sets them)")
+		return errors.New("needs GEMINI_API_KEY and DATABASE_URL (make agent-check sets them), and for HUDDLE_MEDIA=livekit LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET")
 	}
 	script, err := fixturemeet.Parse(*meeting)
 	if err != nil {

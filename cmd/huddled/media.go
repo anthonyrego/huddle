@@ -1,9 +1,10 @@
 package main
 
 // The media server a meeting's voices and videos go through (HUDDLE_MEDIA):
-// livekit, a LiveKit server of its own (the default until huddled's own SFU
-// matches its numbers), or builtin, the SFU inside huddled. serve and
-// agent-check set it up the same way, here.
+// builtin, the SFU inside huddled (the default), or livekit, a LiveKit
+// server of its own (until LiveKit is deleted: the fallback while the
+// two-Mac gates run on builtin). serve and agent-check set it up the same
+// way, here.
 
 import (
 	"crypto/rand"
@@ -45,7 +46,7 @@ type media struct {
 // newMedia sets up the media server HUDDLE_MEDIA names, for a server
 // listening on addr.
 func newMedia(addr string) (*media, error) {
-	m := &media{kind: env("HUDDLE_MEDIA", wire.MediaLiveKit), nodeIP: os.Getenv("HUDDLE_NODE_IP"), close: func() {}}
+	m := &media{kind: env("HUDDLE_MEDIA", wire.MediaBuiltin), nodeIP: os.Getenv("HUDDLE_NODE_IP"), close: func() {}}
 	switch m.kind {
 	case wire.MediaLiveKit:
 		m.lkURL = os.Getenv("LIVEKIT_URL")
@@ -81,7 +82,7 @@ func newMedia(addr string) (*media, error) {
 		m.agent = agent.Builtin{SFU: srv}
 		return m, nil
 	default:
-		return nil, fmt.Errorf("HUDDLE_MEDIA is %q: livekit or builtin", m.kind)
+		return nil, fmt.Errorf("HUDDLE_MEDIA is %q: builtin or livekit", m.kind)
 	}
 }
 

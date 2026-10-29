@@ -1,9 +1,10 @@
 package main
 
-// voice-check: the agent gate's file-to-file runs through LiveKit. Two
-// participants in this process, one publishing a file, the other recording
-// what it hears (with the network simulation on receive), both on the wall
-// clock, so a recording lines up with its source:
+// voice-check: the agent gate's file-to-file runs through the media server
+// the dev join names. Two participants in this process, one publishing a
+// file, the other recording what it hears (with the network simulation on
+// receive), both on the wall clock, so a recording lines up with its
+// source:
 //
 //   - latency: a click train with a clean network; how long after each
 //     click left the sender's mic it reached the receiver's speaker
@@ -36,7 +37,7 @@ import (
 )
 
 func init() {
-	register(&command{name: "voice-check", summary: "file-to-file voice through LiveKit: latency from clicks, speech under loss and jitter", run: runVoiceCheck})
+	register(&command{name: "voice-check", summary: "file-to-file voice through the media server: latency from clicks, speech under loss and jitter", run: runVoiceCheck})
 }
 
 func runVoiceCheck(args []string) error {

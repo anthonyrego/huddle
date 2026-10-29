@@ -298,7 +298,11 @@ loop:
 			var layers []string
 			for _, v := range s.Videos {
 				for i, b := range v.Bitrate {
-					layers = append(layers, fmt.Sprintf("%s:%dp=%dk/%dkf", v.Kind, v.Layers[i].H, b/1000, v.KeysOut[i]))
+					l := fmt.Sprintf("%s:%dp=%dk/%dkf", v.Kind, v.Layers[i].H, b/1000, v.KeysOut[i])
+					if b == 0 && i < len(v.Paused) {
+						l += "/" + v.Paused[i] // unwanted (Dynacast) or bandwidth
+					}
+					layers = append(layers, l)
 				}
 			}
 			line += fmt.Sprintf(" estimate %dk (usable %dk), sent %dk, pacer %v, layers %s", s.Raw/1000, s.Usable/1000, s.Sent/1000,

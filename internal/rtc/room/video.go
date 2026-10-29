@@ -68,6 +68,9 @@ func (r *room) PublishVideo(src rtc.VideoSource, kind rtc.VideoKind) (rtc.VideoP
 		full[i] = l.Bitrate
 	}
 	r.cc.add(p, full)
+	if w, ok := out.(wantedOut); ok {
+		w.onWanted(func(wanted []bool) { r.cc.setWanted(p, wanted) })
+	}
 	if err := src.Start(p.write); err != nil {
 		r.cc.remove(p)
 		out.unpublish()
@@ -127,8 +130,12 @@ func (p *videoPub) rtcp(layer int, pkt rtcp.Packet) {
 	p.src.KeyFrame(layer)
 }
 
-// setBitrates gives the source what congestion control allows.
-func (p *videoPub) setBitrates(bps []int) {
+// setBitrates gives the source what congestion control allows; why says,
+// by layer, why each last started or stopped (for the log: "unwanted",
+// nobody is sent it; "wanted", back at once when someone was; "bandwidth",
+// the estimate paused it; "probed", "started" or "published", it came on
+// after a probe, with nothing to probe with, or at publish).
+func (p *videoPub) setBitrates(bps []int, why []string) {
 	p.mu.Lock()
 	if p.stopped || slicesEqual(bps, p.bps) {
 		p.mu.Unlock()
@@ -139,7 +146,7 @@ func (p *videoPub) setBitrates(bps []int) {
 	p.mu.Unlock()
 	for i := range bps {
 		if (was[i] == 0) != (bps[i] == 0) {
-			slog.Info("video: layer", "kind", p.kind, "layer", layerNames(p.layers[i : i+1])[0], "on", bps[i] > 0, "bps", bps[i])
+			slog.Info("video: layer", "kind", p.kind, "layer", layerNames(p.layers[i : i+1])[0], "on", bps[i] > 0, "bps", bps[i], "why", why[i])
 		}
 	}
 	p.src.SetBitrates(bps)
@@ -178,8 +185,10 @@ func (p *videoPub) Stop() {
 type PubStats struct {
 	Kind    rtc.VideoKind
 	Layers  []rtc.Layer
-	Bitrate []int   // what congestion control gives each layer now (0: paused)
-	Written []int64 // access units sent, per layer
+	Bitrate []int    // what congestion control gives each layer now (0: paused)
+	Wanted  []bool   // whether the SFU says anyone is sent each layer (Dynacast)
+	Paused  []string // why each paused layer is: "unwanted" or "bandwidth" ("-" running)
+	Written []int64  // access units sent, per layer
 	Bytes   []int64
 	Keys    []int64 // keyframes receivers asked for, per layer
 	KeysOut []int64 // keyframes sent, per layer
@@ -272,6 +281,23 @@ func (v *videoCC) add(p *videoPub, full []int) {
 	v.allocate()
 }
 
+// setWanted takes the server's word on which of p's layers anyone is sent
+// (Dynacast), and shares the estimate out again at once: a layer someone
+// now wants comes back without waiting for the tick.
+func (v *videoCC) setWanted(p *videoPub, wanted []bool) {
+	v.mu.Lock()
+	v.alloc.want(p, wanted)
+	v.mu.Unlock()
+	var names []string
+	for i, w := range wanted {
+		if w && i < len(p.layers) {
+			names = append(names, layerNames(p.layers[i : i+1])[0])
+		}
+	}
+	slog.Info("video: wanted", "kind", p.kind, "layers", names)
+	v.allocate()
+}
+
 func (v *videoCC) remove(p *videoPub) {
 	v.mu.Lock()
 	v.alloc.remove(p)
@@ -300,6 +326,7 @@ func (v *videoCC) allocate() {
 	type set struct {
 		p   *videoPub
 		bps []int
+		why []string
 	}
 	var sets []set
 	given := audioReserve
@@ -316,7 +343,7 @@ func (v *videoCC) allocate() {
 		for _, b := range bps {
 			given += b
 		}
-		sets = append(sets, set{p, bps})
+		sets = append(sets, set{p, bps, v.alloc.whys(p, len(p.layers))})
 	}
 	est := v.est
 	pace := max(v.usable, given)
@@ -325,7 +352,7 @@ func (v *videoCC) allocate() {
 		est.Pacer.SetRate(pace)
 	}
 	for _, s := range sets {
-		s.p.setBitrates(s.bps)
+		s.p.setBitrates(s.bps, s.why)
 	}
 }
 
@@ -360,10 +387,20 @@ func (v *videoCC) log() {
 	pubs := append([]*videoPub(nil), v.pubs...)
 	v.mu.Unlock()
 	for _, p := range pubs {
-		ps := p.stats()
+		ps := v.stats(p)
 		slog.Info("video: sending", "kind", ps.Kind, "estimate", s.Raw, "usable", s.Usable, "sent", s.Sent,
-			"pacerQueue", s.Queue.Round(time.Millisecond), "layerBps", ps.Bitrate, "written", ps.Written, "keyframesAsked", ps.Keys)
+			"pacerQueue", s.Queue.Round(time.Millisecond), "layerBps", ps.Bitrate, "wanted", ps.Wanted, "paused", ps.Paused,
+			"written", ps.Written, "keyframesAsked", ps.Keys)
 	}
+}
+
+// stats are p's numbers, with what the allocator says of its layers.
+func (v *videoCC) stats(p *videoPub) PubStats {
+	ps := p.stats()
+	v.mu.Lock()
+	ps.Wanted, ps.Paused = v.alloc.states(p, len(p.layers))
+	v.mu.Unlock()
+	return ps
 }
 
 func (v *videoCC) stop() { v.stopOnce.Do(func() { close(v.quit) }) }
@@ -386,7 +423,7 @@ func VideoSendStats(rm rtc.Room) SendStats {
 	pubs := append([]*videoPub(nil), r.cc.pubs...)
 	r.cc.mu.Unlock()
 	for _, p := range pubs {
-		s.Videos = append(s.Videos, p.stats())
+		s.Videos = append(s.Videos, r.cc.stats(p))
 	}
 	return s
 }

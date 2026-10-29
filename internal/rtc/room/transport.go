@@ -134,6 +134,14 @@ type videoOut interface {
 	unpublish() error
 }
 
+// wantedOut is a videoOut whose server says which of its layers anyone is
+// sent (Dynacast: huddle's SFU; lksdk doesn't pass LiveKit's on, so there
+// every layer stays wanted). f hears each change, a bool per layer, largest
+// first, and the last one heard before it was set.
+type wantedOut interface {
+	onWanted(f func(wanted []bool))
+}
+
 // dialer is the transport for a join's media server.
 func dialer(kind string) (dialFunc, error) {
 	switch kind {

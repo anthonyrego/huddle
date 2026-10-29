@@ -43,11 +43,18 @@ type sfuTransport struct {
 	// ready closes once Join has returned: events (which can come before
 	// it does) wait for it, so whatever they hand the room has a session.
 	ready chan struct{}
+
+	// What we publish of video, by SID, for the server's wanted; a wanted
+	// for a video not yet in videos (Publish hasn't returned) waits in
+	// wanted.
+	mu     sync.Mutex
+	videos map[string]*sfuVideo
+	wanted map[string][]string
 }
 
 // dialSFU joins the SFU's room with the token j carries.
 func dialSFU(ctx context.Context, j rtc.Join, cfg dialConfig, ev transportEvents) (transport, error) {
-	t := &sfuTransport{ready: make(chan struct{})}
+	t := &sfuTransport{ready: make(chan struct{}), videos: map[string]*sfuVideo{}, wanted: map[string][]string{}}
 	defer close(t.ready)
 	// Congestion control goes on the publish connection after the room's
 	// own (the test uplink), and sfuclient makes that connection once,
@@ -136,6 +143,18 @@ func (t *sfuTransport) events(ev transportEvents) sfuclient.Events {
 				ls[s.Identity] = max(ls[s.Identity], s.Level)
 			}
 			ev.speakers(ls)
+		},
+		Wanted: func(w signal.Wanted) {
+			wait()
+			t.mu.Lock()
+			v := t.videos[w.SID]
+			if v == nil {
+				t.wanted[w.SID] = w.RIDs
+			}
+			t.mu.Unlock()
+			if v != nil {
+				v.setWanted(w.RIDs)
+			}
 		},
 		Disconnected: func(err error) {
 			wait()
@@ -253,9 +272,15 @@ var sfuRIDs = map[int][]string{
 // sfuVideo is a video's layers as sfuclient tracks, published together as
 // one simulcast track.
 type sfuVideo struct {
+	t      *sfuTransport
 	s      *sfuclient.Session
 	id     string
 	tracks []*sfuclient.Track // by layer, largest first
+	rids   []string           // by layer
+
+	mu     sync.Mutex
+	wanted []bool // the server's last word (nil: none yet, every layer wanted)
+	hook   func([]bool)
 }
 
 func (t *sfuTransport) publishVideo(kind rtc.VideoKind, layers []rtc.Layer, onRTCP func(layer int, p rtcp.Packet)) (videoOut, error) {
@@ -268,7 +293,7 @@ func (t *sfuTransport) publishVideo(kind rtc.VideoKind, layers []rtc.Layer, onRT
 	if kind == rtc.Screen {
 		req.Source, req.Name = signal.Screen, "screen"
 	}
-	v := &sfuVideo{s: t.s, tracks: make([]*sfuclient.Track, len(layers))}
+	v := &sfuVideo{t: t, s: t.s, tracks: make([]*sfuclient.Track, len(layers)), rids: rids}
 	for i, l := range layers {
 		req.Layers = append(req.Layers, signal.Layer{RID: rids[i], W: l.W, H: l.H, Bitrate: l.Bitrate})
 		tr, err := sfuclient.NewTrack(codecs.H264, cid, t.s.Self().Identity, rids[i], func(p rtcp.Packet) { onRTCP(i, p) })
@@ -286,10 +311,44 @@ func (t *sfuTransport) publishVideo(kind rtc.VideoKind, layers []rtc.Layer, onRT
 		return nil, fmt.Errorf("publish the %s: %w", kind, err)
 	}
 	v.id = sid
+	t.mu.Lock()
+	t.videos[sid] = v
+	rids, heard := t.wanted[sid]
+	delete(t.wanted, sid)
+	t.mu.Unlock()
+	if heard {
+		v.setWanted(rids)
+	}
 	return v, nil
 }
 
 func (v *sfuVideo) sid() string { return v.id }
+
+// setWanted takes the server's wanted (by RID) for the video, as a bool per
+// layer.
+func (v *sfuVideo) setWanted(rids []string) {
+	w := make([]bool, len(v.rids))
+	for i, rid := range v.rids {
+		w[i] = slices.Contains(rids, rid)
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.wanted = w
+	if v.hook != nil {
+		v.hook(w)
+	}
+}
+
+// onWanted is wantedOut's. The hook is called under v.mu, so it hears the
+// server's words in order.
+func (v *sfuVideo) onWanted(f func([]bool)) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.hook = f
+	if v.wanted != nil {
+		f(v.wanted)
+	}
+}
 
 // write sends one access unit of a layer; one written before the layer is
 // negotiated is dropped (sfuclient.ErrNotBound).
@@ -297,7 +356,15 @@ func (v *sfuVideo) write(layer int, au []byte, ts uint32) error {
 	return v.tracks[layer].WriteFrame(au, ts, nil)
 }
 
-func (v *sfuVideo) unpublish() error { return v.s.Unpublish(v.id) }
+func (v *sfuVideo) unpublish() error {
+	v.t.mu.Lock()
+	delete(v.t.videos, v.id)
+	v.t.mu.Unlock()
+	v.mu.Lock()
+	v.hook = nil
+	v.mu.Unlock()
+	return v.s.Unpublish(v.id)
+}
 
 // sfuRemoteVideo asks the SFU for a video track's layer (signal.Settings:
 // a size, and whether it's on), and its publisher for keyframes.

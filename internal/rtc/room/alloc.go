@@ -34,6 +34,26 @@ import (
 //
 // A layer starting while the estimate has never dropped (a call's start
 // on a good link) starts at its rate at once.
+//
+// Dynacast: the SFU says which layers anyone is sent (wanted; every layer
+// until it says), and a layer nobody wants gets nothing. That isn't the
+// estimate's doing: it isn't a failed try (no longer hold), and it doesn't
+// pause the layers above it as a layer the estimate can't carry does. A
+// wanted layer that isn't running has the next smaller layer stand in for
+// it (needed), as the SFU stands the nearest running layer in for its
+// viewers meanwhile, so a viewer is never left with nothing. A layer
+// paused because nobody wanted it comes back at its floor at once when
+// it's wanted again, without a probe, if it ran at its floor or more
+// before, GCC's estimate (not the cap) leaves resumeMargin times its
+// floor, and the estimate hasn't dropped since it paused: the link carried
+// it then and nothing says it can't now. (GCC's estimate climbs while less
+// is sent, so the estimate alone wouldn't say so.) Otherwise it takes the
+// probe path, like a layer the estimate paused. A probe's carrier is the
+// highest running layer needed, and a layer nobody needs is never probed
+// for. With nothing running to carry a probe (no layer needed runs), the
+// lowest needed layer starts at its floor once its hold is over and the
+// estimate leaves resumeMargin times its floor, as a call's first layer
+// does.
 
 // Allocation tuning.
 const (
@@ -88,6 +108,18 @@ type allocLayer struct {
 	hold      time.Duration
 	probed    bool      // it came back after a probe: at its floor until the cap counts it
 	added     time.Time // when its video was published
+
+	// Dynacast: whether the SFU says anyone is sent it; whether it's
+	// needed (wanted, or standing in for a larger wanted layer that isn't
+	// running); whether it's paused because nobody needed it (not by the
+	// estimate), and when, at what it ran before.
+	wanted   bool
+	needed   bool
+	unwanted bool
+	pausedAt time.Time
+	ranAt    int
+	// why it last started or stopped, for the log.
+	why string
 }
 
 func (l *allocLayer) floor() int { return int(float64(l.full) * floorShare) }
@@ -127,13 +159,49 @@ type allocator struct {
 	probe   *probe
 }
 
-// add puts a video's layers in, all paused: those that fit start at
-// the next allocation, the rest wait for a probe.
+// add puts a video's layers in, all paused and all wanted: those that fit
+// start at the next allocation, the rest wait for a probe.
 func (a *allocator) add(p *videoPub, full []int, now time.Time) {
 	for i, b := range full {
-		a.layers = append(a.layers, &allocLayer{pub: p, layer: i, full: b, hold: holdFirst, added: now})
+		a.layers = append(a.layers, &allocLayer{pub: p, layer: i, full: b, hold: holdFirst, added: now, wanted: true, needed: true})
 	}
 	slices.SortStableFunc(a.layers, func(x, y *allocLayer) int { return x.full - y.full })
+}
+
+// want takes the SFU's word on which of a video's layers anyone is sent,
+// by layer, largest first.
+func (a *allocator) want(p *videoPub, wanted []bool) {
+	for _, l := range a.layers {
+		if l.pub == p && l.layer < len(wanted) {
+			l.wanted = wanted[l.layer]
+		}
+	}
+}
+
+// need marks the layers each video needs: those wanted and, under a wanted
+// layer that isn't running, the next smaller one, standing in for it. A
+// layer paused only because nobody wanted it is taken to be coming back at
+// once; if it can't, allocate makes it a paused layer like any other, and
+// the next allocation has a smaller one stand in for it.
+func (a *allocator) need() {
+	byPub := map[*videoPub][]*allocLayer{}
+	for _, l := range a.layers {
+		byPub[l.pub] = append(byPub[l.pub], l)
+	}
+	for _, ls := range byPub {
+		slices.SortFunc(ls, func(x, y *allocLayer) int { return x.layer - y.layer }) // largest first
+		stand := false
+		for _, l := range ls {
+			l.needed = l.wanted || stand
+			stand = l.needed && l.bps == 0 && !l.unwanted
+		}
+	}
+}
+
+// resumable says whether a layer paused only because nobody wanted it may
+// come back at its floor at once, with leftRaw of GCC's estimate left.
+func (a *allocator) resumable(l *allocLayer, leftRaw int) bool {
+	return l.unwanted && l.ranAt >= l.floor() && leftRaw >= int(resumeMargin*float64(l.floor())) && !a.dropAt.After(l.pausedAt)
 }
 
 // remove takes a video's layers out.
@@ -161,13 +229,29 @@ func (a *allocator) allocate(raw, sent int, now time.Time) int {
 	// anything has been sent, the estimate GCC starts from (its own may
 	// have grown for minutes while only the voice was sent).
 	leftFresh := min(raw, max(usable, icept.BWEInitial)) - audioReserve
+	a.need()
+	running := false // something needed runs, to carry a probe
+	for _, l := range a.layers {
+		running = running || (l.bps > 0 && l.needed)
+	}
 	blocked := false
 	var top *allocLayer // the highest layer running
 	for _, l := range a.layers {
 		was := l.bps
+		if l.needed && was == 0 && l.unwanted && !blocked && !a.resumable(l, leftRaw) {
+			l.unwanted = false // it waits as any paused layer does
+		}
 		switch {
+		case !l.needed:
+			l.bps = 0
 		case blocked:
 			l.bps = 0
+		case was == 0 && l.unwanted:
+			// Wanted again, and nothing says the link can't carry it: at
+			// its floor at once, as after a probe.
+			l.since, l.probed = now, true
+			l.bps = l.floor()
+			l.unwanted, l.why = false, "wanted"
 		case was > 0 && l.free(now):
 			// Just started: GCC's estimate (not the cap) says whether it fits.
 			switch {
@@ -188,6 +272,7 @@ func (a *allocator) allocate(raw, sent int, now time.Time) int {
 				// Just published, and it fits what's known: at once.
 				l.since, l.probed = now, false
 				l.bps = min(l.full, leftFresh)
+				l.why = "published"
 			case quiet && top != nil && a.probe == nil:
 				dur := probeFor
 				if a.dropAt.IsZero() {
@@ -195,29 +280,49 @@ func (a *allocator) allocate(raw, sent int, now time.Time) int {
 				}
 				a.probe = &probe{target: l, carrier: top, start: now, sentAt: sent, dur: dur}
 				l.bps = 0
+			case !running:
+				// Nothing runs to carry a probe: at its floor, as a call's
+				// first layer.
+				l.since, l.probed = now, true
+				l.bps = l.floor()
+				l.why = "started"
+				running = true
 			default:
 				l.bps = 0
 			}
 		default:
 			l.bps = 0
 		}
-		if l.bps == 0 {
+		switch {
+		case l.bps > 0:
+			top = l
+		case !l.needed:
+			// Nobody needs it: Dynacast's pause, not the estimate's; the
+			// layers above it carry on.
+			if was > 0 {
+				l.unwanted, l.pausedAt, l.ranAt, l.why = true, now, was, "unwanted"
+			}
+		default:
 			blocked = true
 			if was > 0 { // the estimate paused it
 				l.failed(now)
+				l.why = "bandwidth"
 			}
-		} else {
-			top = l
 		}
 		left -= l.bps
 		leftRaw -= l.bps
 		leftFresh -= l.bps
 	}
 	if p := a.probe; p != nil {
-		if p.carrier.bps == 0 { // the carrier itself paused
+		switch {
+		case !p.target.needed || !p.carrier.needed:
+			// Nobody needs one of them any more: no failure, and the
+			// target, if it's still needed, tries again with another.
+			a.probe = nil
+		case p.carrier.bps == 0: // the carrier itself paused
 			p.target.failed(now)
 			a.probe = nil
-		} else {
+		default:
 			p.carrier.bps += p.boost
 		}
 	}
@@ -228,6 +333,12 @@ func (a *allocator) allocate(raw, sent int, now time.Time) int {
 // and l starts. It returns l's bitrate.
 func (a *allocator) probing(l, top *allocLayer, leftRaw, sent int, now time.Time) int {
 	p := a.probe
+	if !p.carrier.needed {
+		// Nobody needs the carrier any more: the probe ends without
+		// counting against l.
+		a.probe = nil
+		return 0
+	}
 	k := min(float64(now.Sub(p.start))/float64(p.dur), 1)
 	boost := int(k * float64(l.floor()))
 	switch {
@@ -240,6 +351,7 @@ func (a *allocator) probing(l, top *allocLayer, leftRaw, sent int, now time.Time
 		// It carried the floor: l comes back at it.
 		a.probe = nil
 		l.since, l.probed = now, true
+		l.why = "probed"
 		return l.floor()
 	}
 	p.boost = boost
@@ -252,6 +364,40 @@ func (a *allocator) bitrates(p *videoPub, n int) []int {
 	for _, l := range a.layers {
 		if l.pub == p && l.layer < n {
 			out[l.layer] = l.bps
+		}
+	}
+	return out
+}
+
+// states are a video's layers as the log shows them, by layer: whether
+// the SFU wants each, and why each that isn't running is paused
+// ("unwanted": nobody needs it; "bandwidth": the estimate can't carry it,
+// or it waits for a probe; "-" while it runs).
+func (a *allocator) states(p *videoPub, n int) (wanted []bool, paused []string) {
+	wanted, paused = make([]bool, n), make([]string, n)
+	for _, l := range a.layers {
+		if l.pub != p || l.layer >= n {
+			continue
+		}
+		wanted[l.layer] = l.wanted
+		switch {
+		case l.bps > 0:
+			paused[l.layer] = "-"
+		case !l.needed || l.unwanted:
+			paused[l.layer] = "unwanted"
+		default:
+			paused[l.layer] = "bandwidth"
+		}
+	}
+	return wanted, paused
+}
+
+// whys are why each of a video's layers last started or stopped, by layer.
+func (a *allocator) whys(p *videoPub, n int) []string {
+	out := make([]string, n)
+	for _, l := range a.layers {
+		if l.pub == p && l.layer < n {
+			out[l.layer] = l.why
 		}
 	}
 	return out

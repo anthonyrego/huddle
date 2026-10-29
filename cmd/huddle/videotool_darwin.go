@@ -441,7 +441,7 @@ func newVideoTrace(dir string) (*videoTrace, error) {
 	}
 	t := &videoTrace{pf: pf, uf: uf, pkts: bufio.NewWriter(pf), units: bufio.NewWriter(uf)}
 	fmt.Fprintln(t.pkts, "identity,kind,seq,rtp,marker,nal,bytes,wire_ns,read_ns")
-	fmt.Fprintln(t.units, "identity,kind,rtp,key,gap,skipped,last_ns,at_ns")
+	fmt.Fprintln(t.units, "identity,kind,rtp,key,gap,skipped,last_ns,at_ns,lost_ns")
 	return t, nil
 }
 
@@ -471,7 +471,7 @@ func (t *videoTrace) packet(v rtc.VideoTrack, p *rtp.Packet, wire, at time.Time)
 func (t *videoTrace) unit(v rtc.VideoTrack, u rtcroom.VideoUnitInfo) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	fmt.Fprintf(t.units, "%s,%s,%d,%v,%v,%v,%d,%d\n", v.Identity(), v.Kind(), u.RTP, u.Key, u.Gap, u.Skipped, nanos(u.Last), nanos(u.At))
+	fmt.Fprintf(t.units, "%s,%s,%d,%v,%v,%v,%d,%d,%d\n", v.Identity(), v.Kind(), u.RTP, u.Key, u.Gap, u.Skipped, nanos(u.Last), nanos(u.At), nanos(u.Lost))
 }
 
 func (t *videoTrace) close() {

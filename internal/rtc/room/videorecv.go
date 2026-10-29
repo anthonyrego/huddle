@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/rtcp"
@@ -45,6 +46,9 @@ type videoTrack struct {
 	latest video.Latest
 	aus    chan au
 	done   chan struct{}
+	// wantKey tells the reading goroutine's assembler that the decoder
+	// needs a keyframe (after a decode error, or shown again).
+	wantKey atomic.Bool
 
 	// The size asked for and the one sent to the SFU: -1 before any, so a
 	// track never shown is turned off by its first SetSize(0, 0).
@@ -147,6 +151,7 @@ func (t *videoTrack) sendSize() {
 			t.mu.Lock()
 			t.waitKey = true
 			t.mu.Unlock()
+			t.wantKey.Store(true)
 			time.AfterFunc(100*time.Millisecond, t.askKey)
 		}
 	}
@@ -209,6 +214,7 @@ func (t *videoTrack) read() {
 	defer close(t.aus)
 	asm := newAssembler()
 	pktHook, unitHook := t.r.cfg.VideoPacket, t.r.cfg.VideoUnit
+	skipped := 0 // units the decoder couldn't take, besides what the assembler skipped
 	for {
 		p, attr, err := t.track.ReadRTP()
 		if err != nil {
@@ -219,23 +225,28 @@ func (t *videoTrack) read() {
 			wire, _ := icept.Arrived(attr)
 			pktHook(t, p, wire, now)
 		}
+		if t.wantKey.Swap(false) {
+			asm.awaitKey(now)
+		}
 		for _, u := range asm.push(p, now) {
 			t.mu.Lock()
 			t.st.Units++
-			t.st.LostPkts, t.st.Cut = asm.Dropped, asm.Cut
 			if u.gap && !t.waitKey {
 				t.st.Gaps++
-				t.waitKey, t.lostAt = true, now
+				t.waitKey, t.lostAt = true, u.lost
+				if t.lostAt.IsZero() {
+					t.lostAt = now
+				}
 			}
 			skip := t.waitKey && !u.key
 			if skip {
-				t.st.Skipped++
+				skipped++
 			} else {
 				t.waitKey = false
 			}
 			t.mu.Unlock()
 			if unitHook != nil {
-				unitHook(t, VideoUnitInfo{RTP: u.ts, Key: u.key, Gap: u.gap, Skipped: skip, Last: u.last, At: u.at})
+				unitHook(t, VideoUnitInfo{RTP: u.ts, Key: u.key, Gap: u.gap, Skipped: skip, Lost: u.lost, Last: u.last, At: u.at})
 			}
 			if skip {
 				t.askKey()
@@ -248,8 +259,22 @@ func (t *videoTrack) read() {
 				t.waitKey, t.lostAt = true, now
 				t.st.Gaps++
 				t.mu.Unlock()
+				asm.awaitKey(now)
 				t.askKey()
 			}
+		}
+		// The assembler gave a hole up: ask for a keyframe now, not when
+		// the next unit comes (it drops what isn't one meanwhile).
+		waiting := asm.awaitingKey()
+		t.mu.Lock()
+		t.st.LostPkts, t.st.Cut, t.st.Skipped = asm.Dropped, asm.Cut, skipped+asm.Skipped
+		if waiting && !t.waitKey {
+			t.st.Gaps++
+			t.waitKey, t.lostAt = true, asm.lostAt
+		}
+		t.mu.Unlock()
+		if waiting {
+			t.askKey()
 		}
 	}
 }
@@ -299,6 +324,7 @@ func (t *videoTrack) play() {
 				t.lostAt = time.Now()
 			}
 			t.mu.Unlock()
+			t.wantKey.Store(true)
 			t.askKey()
 			continue
 		}
@@ -360,6 +386,7 @@ type VideoUnitInfo struct {
 	Key     bool
 	Gap     bool      // units were lost before it
 	Skipped bool      // dropped: the decoder waits for a keyframe
+	Lost    time.Time // with Gap: when the loss was found (and a keyframe asked for)
 	Last    time.Time // when its last packet came
 	At      time.Time // when it was put together
 }

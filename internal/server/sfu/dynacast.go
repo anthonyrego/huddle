@@ -95,6 +95,18 @@ func (pub *publication) updateWanted(now time.Time) {
 	pub.owner.log.Info("sfu: wanted", "track", pub.sid, "rids", rids, "was", was)
 }
 
+// resumable is whether layer i runs, or would once a viewer wants it: its
+// publisher was told nobody does. (A layer told wanted that doesn't run
+// is one the publisher's uplink can't carry.)
+func (pub *publication) resumable(i int) bool {
+	if pub.layers[i].alive.Load() {
+		return true
+	}
+	pub.dmu.Lock()
+	defer pub.dmu.Unlock()
+	return !pub.dyn.told[i]
+}
+
 // rids names the layers marked in ls, largest first.
 func (pub *publication) rids(ls []bool) []string {
 	out := []string{}
@@ -107,14 +119,16 @@ func (pub *publication) rids(ls []bool) []string {
 }
 
 // wanted marks in in the layers this viewer wants: the one its settings
-// chose and the one it's being sent.
+// chose, the smaller one its downlink allows while that's narrow
+// (downlink.go; else pick would stand a larger layer in for a paused
+// one), and the one it's being sent.
 func (d *downTrack) wanted(in []bool) {
 	if d.fwd == nil {
 		return
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for _, i := range []int{d.want, d.fwd.current} {
+	for _, i := range []int{d.want, d.limited(d.want), d.fwd.current} {
 		if i >= 0 && i < len(in) {
 			in[i] = true
 		}

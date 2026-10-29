@@ -222,10 +222,11 @@ func (m *rateMeter) rate(now time.Time) (bps int, ok bool) {
 }
 
 // layerRate is layer i's bitrate as the SFU receives it, or its published
-// bitrate before it has been measured.
+// bitrate before it has been measured or while it's paused (Dynacast
+// starts one nobody wanted again when a downlink allows it).
 func (pub *publication) layerRate(i int, now time.Time) int {
 	l := pub.layers[i]
-	if bps, ok := l.meter.rate(now); ok {
+	if bps, ok := l.meter.rate(now); ok && l.alive.Load() {
 		return bps
 	}
 	return l.info.Bitrate
@@ -437,7 +438,7 @@ type dlTrack struct {
 	want    int // the layer its viewer wants
 	aimed   int // the layer it's being sent (-1: none)
 	lim     int
-	running []int // the layers that run, largest first
+	running []int // the layers that run, or would once wanted (resumable), largest first
 	screen  bool
 	area    int64
 	sending bool // its forwarder sends a layer
@@ -478,8 +479,8 @@ func (dl *downlink) videos() ([]dlTrack, int) {
 			}
 			continue
 		}
-		for i, l := range dt.pub.layers {
-			if l.alive.Load() {
+		for i := range dt.pub.layers {
+			if dt.pub.resumable(i) {
 				t.running = append(t.running, i)
 			}
 		}

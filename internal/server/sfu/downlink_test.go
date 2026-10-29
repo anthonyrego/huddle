@@ -123,6 +123,51 @@ func TestDownlinkLimitedViewer(t *testing.T) {
 	}
 }
 
+// Dynacast and the downlink together: a camera that pauses the layers
+// nobody wants, its one viewer on the top layer, the others paused. The
+// viewer's link narrows: the smaller layer its downlink allows is wanted
+// too, so the publisher starts it again and the viewer moves down to it
+// (else pick would stand the top layer in for the paused one, and the
+// viewer stay on what its link can't carry).
+func TestDownlinkWantsItsLayer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("seconds of video")
+	}
+	shortFirst(t)
+	ts := newTestSFU(t, nil)
+	a := ts.join(t, "r", "a", sfuclient.Options{})
+	var link *icept.RecvLink
+	open := &icept.Downlink{Slots: icept.UplinkSlots, Made: func(l *icept.RecvLink) { link = l }}
+	b := ts.join(t, "r", "b", sfuclient.Options{Subscribe: []interceptor.Factory{open}, NoReplayProtection: true})
+	cam := publishCamera(t, a)
+	cam.follow(a)
+	waitFor(t, wait, "b to be offered a's camera", func() bool { return b.from("a", signal.Video) != nil })
+	b.settings(t, "a", 1280, 720, true)
+	waitWanted(t, a, cam.sid, "f")
+	time.Sleep(2 * layerQuiet) // h and q paused at the SFU too
+
+	narrowed := time.Now()
+	link.SetRate(500_000)
+	waitFor(t, 2*wait, "b moved down", func() bool { return lastLayer(b, "a") > 0 })
+	down := time.Since(narrowed)
+	var heard []string
+	for _, w := range a.wantedHeard() {
+		if w.at.After(narrowed) {
+			heard = append(heard, fmtRIDs(w.rids))
+		}
+	}
+	us := since(mediaUnits(b, "a"), narrowed)
+	path, n := layersOf(us)
+	t.Logf("b, its link narrowed to 500 kbps: on %s %v later; wanted since %v; sent %s %v; the link dropped %d",
+		camLayers[lastLayer(b, "a")].RID, down.Round(time.Millisecond), heard, path, n, link.Dropped())
+	if !slices.Contains(heard, "[f h]") {
+		t.Errorf("wanted since the link narrowed %v, want [f h] among them", heard)
+	}
+	if down > 3*time.Second {
+		t.Errorf("b moved down %v after its link narrowed: want within 3 s", down)
+	}
+}
+
 // A probe's padding goes between frames, numbered in the stream: with a
 // seventh of what the viewer is sent dropped on the way (padding too),
 // every packet comes again on its NACK, the stream is unbroken, each run

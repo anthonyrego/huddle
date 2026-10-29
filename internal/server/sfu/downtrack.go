@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/interceptor"
@@ -33,7 +34,8 @@ const newRunGap = 20 * time.Millisecond
 // stream starts again, and only the header extensions the subscriber
 // negotiated (the audio level written under its ID; the transport-wide
 // number added by pion). Nothing is written before the publisher sends, or
-// before the subscriber's connection is up: no padding, ever.
+// before the subscriber's connection is up; no padding, but for the
+// downlink's probe between a video's frames (downlink.go).
 //
 // A video's down track sends one simulcast layer at a time, chosen from
 // the viewer's settings and the layers running (downvideo.go), through a
@@ -85,6 +87,17 @@ type downTrack struct {
 	asked   bool
 	boundAt time.Time
 	aimed   int
+
+	// A video's place in its subscriber's downlink (downlink.go): the
+	// largest layer allowed (lim: 0 any, limOff none, limNew not allocated
+	// yet), the area the viewer asked for, and the probe's padding it
+	// carries (padRate, bits a second; what it owes, under mu).
+	lim     atomic.Int32
+	area    atomic.Int64
+	padRate atomic.Int64
+	padOwed float64
+	padAt   time.Time
+	dl      dlState
 }
 
 func newDownTrack(pub *publication, sub *participant) *downTrack {
@@ -92,6 +105,9 @@ func newDownTrack(pub *publication, sub *participant) *downTrack {
 	if pub.kind == webrtc.RTPCodecTypeVideo {
 		d.fwd, d.want, d.aimed = newForwarder(uint16(rand.Uint32())), -1, -1
 		d.emit = d.emitLocked
+		if sub.dl != nil && sub.dl.limited.Load() {
+			d.lim.Store(limNew) // it starts at what fits
+		}
 	}
 	if sub.local != nil {
 		d.voice = newVoice(pub.codec)

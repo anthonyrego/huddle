@@ -34,6 +34,7 @@ type participant struct {
 	local  *localPeer // an in-process participant's; nil for a session on /rtc
 
 	up, down *transport // nil when local
+	dl       *downlink  // what its down connection carries; nil when local
 
 	endOnce    sync.Once
 	finishOnce sync.Once
@@ -65,6 +66,7 @@ func newParticipant(s *Server, conn *websocket.Conn, g rtctoken.Grant, all bool,
 		p.up.close()
 		return nil, err
 	}
+	p.dl = newDownlink(p, s.takeEstimator(p.down.pc.ID()))
 	return p, nil
 }
 

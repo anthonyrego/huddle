@@ -40,6 +40,9 @@ func (d *downTrack) writeVideo(layer int, p *rtp.Packet, now time.Time) {
 	}
 	before := d.packets
 	again := f.push(layer, &p.Header, p.Payload, now, d.emit)
+	if d.packets > before {
+		d.padLocked(now) // a probe's padding, after a frame
+	}
 	target := f.target
 	// The target's keyframe hasn't begun: ask for it (again) as the
 	// target sends what can't be cut over to.
@@ -56,10 +59,11 @@ func (d *downTrack) writeVideo(layer int, p *rtp.Packet, now time.Time) {
 
 // emitLocked sends one packet the forwarder passes on, as the viewer's
 // stream: its payload type and SSRC, the forwarder's sequence number, the
-// publisher's timestamp and marker. d.mu is held, so packets go out in the
-// order they're numbered.
+// publisher's timestamp and marker (and padding bit: a filler's stand-in,
+// layers.go). d.mu is held, so packets go out in the order they're
+// numbered.
 func (d *downTrack) emitLocked(seq uint16, h *rtp.Header, payload []byte) {
-	out := rtp.Header{Version: 2, Marker: h.Marker, PayloadType: d.pt, SequenceNumber: seq, Timestamp: h.Timestamp, SSRC: d.ssrc}
+	out := rtp.Header{Version: 2, Padding: h.Padding, Marker: h.Marker, PayloadType: d.pt, SequenceNumber: seq, Timestamp: h.Timestamp, SSRC: d.ssrc}
 	if _, err := d.w.WriteRTP(&out, payload); err != nil {
 		return
 	}
@@ -107,7 +111,7 @@ func (d *downTrack) tick(now time.Time) {
 // one (writeVideo).
 func (d *downTrack) retarget(now time.Time, ask bool) {
 	d.mu.Lock()
-	target := d.pub.pick(d.want)
+	target := d.pub.pick(d.limited(d.want))
 	key := d.fwd.setTarget(target)
 	changed := target != d.aimed
 	from := d.aimed

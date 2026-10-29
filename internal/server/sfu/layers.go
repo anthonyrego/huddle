@@ -44,6 +44,9 @@ type layer struct {
 	lastAt atomic.Int64                       // the newest packet's arrival, Unix ns; 0 before any
 	alive  atomic.Bool                        // running, as far as the SFU can tell
 
+	meter    *rateMeter // what it sends viewers, for their downlinks
+	inFiller bool       // the FU-A being read is filler (its reading goroutine's)
+
 	// Guarded by publication.lmu.
 	ssrc    uint32
 	sr      senderReport
@@ -55,7 +58,7 @@ type layer struct {
 func newLayers(req signal.Publish) []*layer {
 	ls := make([]*layer, len(req.Layers))
 	for i, l := range req.Layers {
-		ls[i] = &layer{idx: i, info: l}
+		ls[i] = &layer{idx: i, info: l, meter: newRateMeter(rateWindow)}
 	}
 	return ls
 }
@@ -112,6 +115,14 @@ func (pub *publication) forwardLayer(l *layer, tr *webrtc.TrackRemote, p *rtp.Pa
 		return // a stream since replaced
 	}
 	l.lastAt.Store(now.UnixNano())
+	// A publisher's probe filler, for its uplink: viewers are sent its
+	// sequence numbers and marker in a byte of padding, not its bytes.
+	if filler(p.Payload, &l.inFiller) {
+		p.Payload, p.Padding, p.PaddingSize = fillerStub, true, 0
+	} else {
+		p.Padding, p.PaddingSize = false, 0 // any padding was read off already
+	}
+	l.meter.add(now, len(p.Payload)+rtpOverhead)
 	if !l.alive.Load() && l.alive.CompareAndSwap(false, true) {
 		// A layer starting again opens with a keyframe (a new encoder, or
 		// one its sender resumes after Dynacast paused it) as often as not,

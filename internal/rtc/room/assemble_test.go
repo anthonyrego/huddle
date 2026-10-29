@@ -371,6 +371,187 @@ func TestAssembleSkipsFillerTail(t *testing.T) {
 	}
 }
 
+// withPadding puts n padding-only packets after each unit's marker, as the
+// SFU pads a probe between frames: sequence numbers of their own in the
+// one unbroken run, the timestamp of the frame before them, no payload.
+func withPadding(pkts []*rtp.Packet, n int) []*rtp.Packet {
+	var out []*rtp.Packet
+	seq := pkts[0].SequenceNumber
+	for _, p := range pkts {
+		q := *p
+		q.SequenceNumber = seq
+		seq++
+		out = append(out, &q)
+		if !p.Marker {
+			continue
+		}
+		for range n {
+			out = append(out, &rtp.Packet{Header: rtp.Header{Version: 2, Padding: true, PaddingSize: 255, SequenceNumber: seq, Timestamp: p.Timestamp, PayloadType: p.PayloadType, SSRC: p.SSRC}})
+			seq++
+		}
+	}
+	return out
+}
+
+// TestAssembleProbePadding: the SFU's probe pads between frames with
+// packets of padding alone, numbered in the stream and stamped with the
+// frame before them. They're neither a hole nor a unit, and no unit ends
+// at one: in order; with one resent late (after the next frame began);
+// while a frame's own packet is waited for; and while a keyframe is
+// awaited, where they go with the frame skipped before them.
+func TestAssembleProbePadding(t *testing.T) {
+	aus := units(30, 10)
+	start := time.Unix(1000, 0)
+	// push sends the packets 1 ms apart in the order given, and returns the
+	// units out.
+	push := func(a *assembler, pkts []*rtp.Packet) []au {
+		var got []au
+		for i, p := range pkts {
+			got = append(got, a.push(p, start.Add(time.Duration(i)*time.Millisecond))...)
+		}
+		return got
+	}
+	check := func(name string, a *assembler, got []au, want []int) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("%s: %d units out, want %d (dropped %d, cut %d, skipped %d)", name, len(got), len(want), a.Dropped, a.Cut, a.Skipped)
+		}
+		for i, u := range got {
+			if !same(u.data, aus[want[i]]) {
+				t.Fatalf("%s: unit %d out isn't unit %d", name, i, want[i])
+			}
+		}
+	}
+	all := make([]int, len(aus))
+	for i := range all {
+		all[i] = i
+	}
+	padded := withPadding(packetize(aus), 4)
+
+	// In order: every unit, none with a gap.
+	a := newAssembler()
+	got := push(a, padded)
+	check("in order", a, got, all)
+	for i, u := range got {
+		if u.gap {
+			t.Fatalf("in order: unit %d says a unit was lost", i)
+		}
+	}
+
+	// One padding packet comes late, after the next frame's packets: it
+	// fills its hole when it comes, and nothing is given up for it.
+	var late []*rtp.Packet
+	var held *rtp.Packet
+	sent := false
+	for i, p := range padded {
+		if held == nil && len(p.Payload) == 0 && i > 40 && len(padded[i-1].Payload) == 0 {
+			held = p // the second padding packet of a gap
+			continue
+		}
+		late = append(late, p)
+		if held != nil && !sent && p.Marker && p.Timestamp != held.Timestamp {
+			late = append(late, held) // a frame later
+			sent = true
+		}
+	}
+	if !sent {
+		t.Fatal("padding late: nothing held back")
+	}
+	a = newAssembler()
+	check("padding late", a, push(a, late), all)
+	if a.Dropped != 0 || a.gap {
+		t.Fatalf("padding late: %d packets given up", a.Dropped)
+	}
+
+	// A frame's packet is waited for while padding and the next frames
+	// arrive; it comes 100 ms later, and everything after it comes out
+	// then, the padding with nothing.
+	var lost int
+	for i, p := range padded {
+		if p.Timestamp == padded[0].Timestamp+12*3000 && len(p.Payload) > 0 && !p.Marker {
+			lost = i // unit 12's first packet
+			break
+		}
+	}
+	a = newAssembler()
+	var out []au
+	for i, p := range padded {
+		at := start.Add(time.Duration(i) * time.Millisecond)
+		if i == lost {
+			continue
+		}
+		out = append(out, a.push(p, at)...)
+		if at.Sub(start.Add(time.Duration(lost)*time.Millisecond)) >= 100*time.Millisecond && lost >= 0 {
+			out = append(out, a.push(padded[lost], at)...)
+			lost = -1
+		}
+	}
+	check("a hole mended", a, out, all)
+
+	// The same packet never comes: unit 12 is given up, the stream picks
+	// up at the next keyframe (20), and the padding between is skipped
+	// with the frames before it.
+	for i, p := range padded {
+		if p.Timestamp == padded[0].Timestamp+12*3000 && len(p.Payload) > 0 && !p.Marker {
+			lost = i
+			break
+		}
+	}
+	a = newAssembler()
+	out = nil
+	for i, p := range padded {
+		if i != lost {
+			out = append(out, a.push(p, start.Add(time.Duration(i)*10*time.Millisecond))...)
+		}
+	}
+	want := append(slices.Clone(all[:12]), all[20:]...)
+	check("a hole given up", a, out, want)
+	if !out[12].gap || !out[12].key || a.Skipped == 0 {
+		t.Fatalf("a hole given up: after it %v (gap %v), %d skipped", out[12].ts, out[12].gap, a.Skipped)
+	}
+}
+
+// TestAssembleFillerStandIn: the SFU sends a publisher's probe filler (an
+// SEI after a frame's slices, in packets of its own, the last with the
+// frame's marker) as padding-only packets that keep their sequence numbers
+// and the marker: the frame ends at its stand-in's marker, and nothing of
+// the stand-ins goes into it.
+func TestAssembleFillerStandIn(t *testing.T) {
+	aus := units(12, 10)
+	filled := make([][]byte, len(aus))
+	for i, a := range aus {
+		filled[i] = appendFiller(append([]byte(nil), a...), 2500)
+	}
+	var pkts []*rtp.Packet
+	stood, marked := 0, 0
+	for _, p := range packetize(filled) {
+		if carries(p.Payload) == carriesOther && len(p.Payload) > 0 && (p.Payload[0]&0x1f == 6 || p.Payload[0]&0x1f == nalFUA) {
+			p = &rtp.Packet{Header: rtp.Header{Version: 2, Padding: true, Marker: p.Marker, SequenceNumber: p.SequenceNumber, Timestamp: p.Timestamp}}
+			stood++
+			if p.Marker {
+				marked++
+			}
+		}
+		pkts = append(pkts, p)
+	}
+	if stood < 2*len(aus) || marked != len(aus) {
+		t.Fatalf("%d stand-ins, %d with a marker", stood, marked)
+	}
+	a := newAssembler()
+	var got []au
+	for i, p := range pkts {
+		got = append(got, a.push(p, time.Unix(1000, 0).Add(time.Duration(i)*time.Millisecond))...)
+	}
+	if len(got) != len(aus) {
+		t.Fatalf("%d units out, want %d (dropped %d, cut %d)", len(got), len(aus), a.Dropped, a.Cut)
+	}
+	for i, u := range got {
+		if !same(u.data, aus[i]) {
+			t.Fatalf("unit %d out isn't unit %d without its filler", i, i)
+		}
+	}
+}
+
 func TestKeyframeStart(t *testing.T) {
 	for _, c := range []struct {
 		name    string

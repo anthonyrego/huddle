@@ -55,6 +55,13 @@ type Connector struct {
 	// second, with a 50-packet queue in front (a test of congestion
 	// control: huddle video -uplink).
 	Uplink int
+	// Downlink, when set, narrows what this side receives to that many bits
+	// a second, with a 50-packet queue in front shared by everything a
+	// connection receives (a test of the media server's allocation for one
+	// viewer: huddle video -downlink); DownlinkFor, when set, lifts it that
+	// long after joining.
+	Downlink    int
+	DownlinkFor time.Duration
 	// SendOnly subscribes to nothing (bots that only publish).
 	SendOnly bool
 	// VideoFrame, when set, is told of every remote video frame as it is
@@ -88,9 +95,15 @@ func (c *Connector) Connect(ctx context.Context, j rtc.Join, ev rtc.Events) (rtc
 	r.cc = newVideoCC(r)
 	r.ctx, r.cancel = context.WithCancel(context.Background())
 	// Our interceptors, nearest the network first: the receive side's
-	// simulated network, and the test uplink (the transport puts congestion
-	// control after it).
+	// narrow downlink and simulated network, and the test uplink (the
+	// transport puts congestion control after it).
 	cfg := dialConfig{subscribe: !c.SendOnly}
+	if c.Downlink > 0 {
+		cfg.recv = append(cfg.recv, &icept.Downlink{BPS: c.Downlink, Slots: icept.UplinkSlots, Made: r.addDownlink})
+		if c.DownlinkFor > 0 {
+			time.AfterFunc(c.DownlinkFor, r.liftDownlink)
+		}
+	}
 	if c.Sim != nil {
 		cfg.recv = append(cfg.recv, icept.Sim{New: c.Sim})
 	}
@@ -161,6 +174,40 @@ func (c *Connector) Connect(ctx context.Context, j rtc.Join, ev rtc.Events) (rtc
 	return r, nil
 }
 
+// addDownlink keeps a connection's narrow downlink, to lift it later.
+func (r *room) addDownlink(l *icept.RecvLink) {
+	r.dlMu.Lock()
+	r.downlinks = append(r.downlinks, l)
+	r.dlMu.Unlock()
+}
+
+// liftDownlink takes the narrow downlink off every connection.
+func (r *room) liftDownlink() {
+	r.dlMu.Lock()
+	dropped := 0
+	for _, l := range r.downlinks {
+		l.SetRate(0)
+		dropped += l.Dropped()
+	}
+	r.dlMu.Unlock()
+	slog.Info("video: downlink lifted", "after", r.cfg.DownlinkFor, "dropped", dropped)
+}
+
+// DownlinkDropped is how many packets the narrow downlink had no room for.
+func DownlinkDropped(rm rtc.Room) int {
+	r, ok := rm.(*room)
+	if !ok {
+		return 0
+	}
+	r.dlMu.Lock()
+	defer r.dlMu.Unlock()
+	n := 0
+	for _, l := range r.downlinks {
+		n += l.Dropped()
+	}
+	return n
+}
+
 func (c *Connector) statsEvery() time.Duration {
 	if c.StatsEvery == 0 {
 		return 10 * time.Second
@@ -181,6 +228,9 @@ type room struct {
 	once   sync.Once
 
 	cc *videoCC
+
+	dlMu      sync.Mutex
+	downlinks []*icept.RecvLink // -downlink's, one a connection
 
 	mu       sync.Mutex
 	tracks   map[string]*remote     // by track SID

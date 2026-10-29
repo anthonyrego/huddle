@@ -323,7 +323,8 @@ func (p *participant) pubsLocked() []*publication {
 }
 
 // run is the room's clock: sender reports on the down tracks, videos'
-// layers paused, viewers who never said a size, and who's talking.
+// layers paused, viewers who never said a size, the layers publishers are
+// told anyone wants, and who's talking.
 func (r *room) run() {
 	t := time.NewTicker(tick)
 	defer t.Stop()
@@ -353,6 +354,9 @@ func (r *room) run() {
 		for _, dt := range dts {
 			dt.tick(now)
 			dt.reportIfDue(now)
+		}
+		for _, pub := range pubs {
+			pub.updateWanted(now)
 		}
 		if now.Sub(lastSpeakers) >= speakersEvery-tick/2 {
 			lastSpeakers = now

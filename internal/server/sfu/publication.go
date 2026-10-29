@@ -27,7 +27,8 @@ var published atomic.Int64
 // it arrives. The track's sender reports are kept, for the down tracks'
 // own (downTrack.report). A video's layers are each read from a stream of
 // their own (layers.go), and every packet goes to every down track, whose
-// forwarder sends its viewer one layer.
+// forwarder sends its viewer one layer; the publisher is told which layers
+// anyone is sent, and pauses the rest (dynacast.go).
 type publication struct {
 	sid, cid string
 	n        int64
@@ -43,6 +44,10 @@ type publication struct {
 	// guards their streams' SSRCs, sender reports and keyframe requests.
 	layers []*layer
 	lmu    sync.Mutex
+	// dyn is what the publisher has been told of the layers anyone is
+	// sent (dynacast.go); dmu guards it.
+	dyn dynacast
+	dmu sync.Mutex
 
 	mu     sync.Mutex
 	downs  []*downTrack // replaced, never changed in place: forward reads it unlocked
@@ -72,6 +77,7 @@ func newPublication(owner *participant, sid string, req signal.Publish) *publica
 	if req.Kind == signal.Video {
 		pub.kind, pub.codec = webrtc.RTPCodecTypeVideo, codecs.H264
 		pub.layers = newLayers(req)
+		pub.dyn = newDynacast(len(pub.layers), time.Now())
 	}
 	pub.muted.Store(req.Muted)
 	return pub

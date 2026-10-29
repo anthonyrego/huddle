@@ -189,7 +189,8 @@ type owdAt struct {
 
 // queue is how far the lowest one-way delay of the last queueWindow stands
 // over the lowest of the last baseWindow, less what jitter usually keeps it
-// over that (up to jitterAllowed: the window's usual lowest, its median): a
+// over that (up to jitterAllowed: the window's usual lowest, its 25th
+// percentile, which a few seconds of a queue building don't move): a
 // queue standing in front of the viewer's link, every packet waiting in it.
 // GCC's delay-based part sees a queue only while it grows (one that has
 // filled and drops what overflows holds still), and sees jitter too; this
@@ -211,7 +212,7 @@ func (g *gate) queue() time.Duration {
 		ws[i] = w.owd
 	}
 	slices.Sort(ws)
-	usual := min(ws[len(ws)/2]-base, jitterAllowed.Microseconds())
+	usual := min(ws[len(ws)/4]-base, jitterAllowed.Microseconds())
 	return time.Duration(g.windows[len(g.windows)-1].owd-base-usual) * time.Microsecond
 }
 

@@ -104,7 +104,7 @@ const (
 	// what gets through).
 	queueMost  = 30 * time.Millisecond
 	overFor    = 100 * time.Millisecond
-	queueShare = 0.95
+	queueShare = 0.9
 	// calm is how long since GCC's estimate last dropped before a probe,
 	// and how long everything must have had what it wants to be free.
 	calm = 10 * time.Second

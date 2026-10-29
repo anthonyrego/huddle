@@ -7,7 +7,8 @@ package main
 // -out together, a second participant in this process receives what the
 // first sends, so every frame's capture time is known by its number and
 // the CSV has capture → shown latency. Network conditions: -sim-* make
-// the receive side worse, -uplink narrows the send side. -flash-every
+// the receive side worse, -uplink narrows the send side and -downlink the
+// receive side (all of what one connection receives). -flash-every
 // puts a beep on the voice track at each flash, for lip sync; -voice
 // publishes a WAV beside the video and scores what's heard.
 
@@ -67,6 +68,8 @@ func runVideo(args []string) error {
 	want := fs.String("want", "", "ask for every received video at this size (SetSize), WxH")
 	switchTo := fs.String("switch", "", "then ask for WxH@T: this size, T after joining (1280x720@8s)")
 	uplink := fs.String("uplink", "", "narrow what's sent to RATE bits a second (1M, 600k)")
+	downlink := fs.String("downlink", "", "narrow what's received to RATE bits a second (1M, 600k), one queue for everything a connection receives")
+	downlinkFor := fs.Duration("downlink-for", 0, "with -downlink: lift it this long after joining")
 	pngs := fs.Int("pngs", 6, "sample frames written as PNGs")
 	trace := fs.Bool("trace", false, "with -out: write every received video packet (packets.csv: off the network, read) and access unit (units.csv: last packet, put together, skipped)")
 	var sim simFlags
@@ -135,6 +138,16 @@ func runVideo(args []string) error {
 			return err
 		}
 	}
+	downBps := 0
+	if *downlink != "" {
+		var err error
+		if downBps, err = parseRate(*downlink); err != nil {
+			return err
+		}
+	}
+	if *downlinkFor > 0 && downBps == 0 {
+		return errors.New("-downlink-for lifts -downlink")
+	}
 	paths, err := config.Resolve()
 	if err != nil {
 		return err
@@ -167,6 +180,7 @@ func runVideo(args []string) error {
 	var recv rtc.Room
 	var spk *fileio.Speaker
 	recvConn := sim.connector()
+	recvConn.Downlink, recvConn.DownlinkFor = downBps, *downlinkFor
 	recvConn.NewDecoder = videoDecoder
 	recvConn.VideoFrame = run.frame
 	if *trace {
@@ -187,6 +201,13 @@ func runVideo(args []string) error {
 		}
 		defer recv.Leave()
 		fmt.Printf("video: receiving in %s as %s\n", j.Room, j.Identity)
+		if downBps > 0 {
+			lift := ""
+			if *downlinkFor > 0 {
+				lift = fmt.Sprintf(", lifted after %v", *downlinkFor)
+			}
+			fmt.Printf("video: the downlink narrowed to %s%s\n", *downlink, lift)
+		}
 	}
 
 	// The sender.
@@ -278,7 +299,7 @@ func runVideo(args []string) error {
 	run.start = start
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
-	switched := false
+	switched, lifted := false, false
 loop:
 	for {
 		select {
@@ -291,6 +312,10 @@ loop:
 			switched = true
 			run.setSizes(swW, swH)
 			fmt.Printf("video: t=%2.0fs asked for %dx%d\n", t.Seconds(), swW, swH)
+		}
+		if *downlinkFor > 0 && !lifted && t >= *downlinkFor {
+			lifted = true
+			fmt.Printf("video: t=%2.0fs the downlink lifted\n", t.Seconds())
 		}
 		line := fmt.Sprintf("video: t=%2.0fs", t.Seconds())
 		if send != nil {
@@ -334,6 +359,9 @@ loop:
 		if s.UplinkDrops > 0 {
 			fmt.Printf("sent     the %s uplink dropped %d packets\n", *uplink, s.UplinkDrops)
 		}
+	}
+	if recv != nil && downBps > 0 {
+		fmt.Printf("received the %s downlink dropped %d packets\n", *downlink, rtcroom.DownlinkDropped(recv))
 	}
 	if recv != nil {
 		run.report(recv, *out, swW, run.switchedAt)
@@ -670,6 +698,14 @@ func (r *videoRun) report(room rtc.Room, dir string, switchW int, switchedAt tim
 		}
 		sort.Strings(sz)
 		fmt.Printf("; sizes %s\n", strings.Join(sz, " "))
+		// Each change of size, timed from the start (the layer sent moving).
+		var path []string
+		for i, x := range fr {
+			if i == 0 || x.w != fr[i-1].w || x.h != fr[i-1].h {
+				path = append(path, fmt.Sprintf("%dx%d@%.1fs", x.w, x.h, x.shown.Sub(r.start).Seconds()))
+			}
+		}
+		fmt.Printf("layers   %s: %s\n", k, strings.Join(path, " → "))
 		if len(lats) > 0 {
 			fmt.Printf("latency  %s: capture → shown median %v, p95 %v, min %v, max %v (capture → last packet median %v, p95 %v; → put together median %v, p95 %v), %d frames\n", k,
 				pctDur(lats, 50), pctDur(lats, 95), pctDur(lats, 0), pctDur(lats, 100), pctDur(net, 50), pctDur(net, 95), pctDur(asm, 50), pctDur(asm, 95), len(lats))

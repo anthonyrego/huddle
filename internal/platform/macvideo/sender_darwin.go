@@ -228,7 +228,8 @@ func (s *Sender) KeyFrame(layer int) {
 }
 
 // SetBitrates gives each layer what congestion control allows; 0 skips
-// the layer. A layer that comes back starts with a keyframe.
+// the layer. A layer that comes back starts with a keyframe, its encoder
+// not counting the time it was skipped (Encoder.Skipped).
 func (s *Sender) SetBitrates(bps []int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -239,6 +240,9 @@ func (s *Sender) SetBitrates(bps []int) {
 		}
 		s.bps[i].Store(int64(bps[i]))
 		if bps[i] == 0 {
+			if s.running && i < len(s.encs) {
+				s.encs[i].Skipped()
+			}
 			continue
 		}
 		if was == 0 {

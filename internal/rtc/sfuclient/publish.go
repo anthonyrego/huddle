@@ -59,7 +59,8 @@ func (s *Session) PublishAudio(ctx context.Context, name string) (*Track, string
 // Track each, made with NewTrack under req.CID with the layer's rid; the
 // first is the transceiver's, the rest its further encodings). It asks the
 // server, waits for the SID, then offers the publish connection with the
-// track on it.
+// track on it. For a video, the server may say later which layers anyone
+// is sent (Events.Wanted), and the caller pauses the rest.
 func (s *Session) Publish(ctx context.Context, req signal.Publish, tracks ...*Track) (string, error) {
 	if len(tracks) == 0 {
 		return "", errors.New("sfuclient: publish needs a track")

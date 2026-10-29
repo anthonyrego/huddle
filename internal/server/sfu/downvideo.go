@@ -9,6 +9,8 @@ package sfu
 // then sends the top layer. The layer sent is the one wanted if it runs,
 // else the nearest that does (pick): a publisher pauses its larger layers
 // when its uplink narrows, and its viewers move down and back up with it.
+// What viewers want is what the publisher keeps running (dynacast.go): a
+// layer nobody wants pauses, and starts again when someone does.
 //
 // A switch (a start, a size, turned back on, a layer paused) asks the new
 // layer for a keyframe at once, and again every keyEvery while the viewer
@@ -77,6 +79,7 @@ func (d *downTrack) settings(w, h int, on bool, now time.Time) {
 	d.mu.Unlock()
 	d.sub.log.Debug("sfu: settings", "track", d.pub.sid, "w", w, "h", h, "on", on, "wants", d.ridOf(want))
 	d.retarget(now, true)
+	d.pub.updateWanted(now)
 }
 
 // tick is the room's clock: a viewer that hasn't said a size settingsWait
@@ -94,6 +97,7 @@ func (d *downTrack) tick(now time.Time) {
 	if due {
 		d.sub.log.Debug("sfu: no settings; the top layer", "track", d.pub.sid)
 		d.retarget(now, true)
+		d.pub.updateWanted(now)
 	}
 }
 

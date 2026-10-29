@@ -163,6 +163,15 @@ type testClient struct {
 	speakers     [][]signal.Speaker
 	subConnected time.Time
 	disconnected error
+	wanted       []wantedSeen        // the server's wanted for what c publishes, in order
+	onWanted     func(signal.Wanted) // called with each, after it's recorded
+}
+
+// wantedSeen is a wanted as heard, and when.
+type wantedSeen struct {
+	sid  string
+	rids []string
+	at   time.Time
 }
 
 // join has identity join room with opts.
@@ -231,6 +240,15 @@ func (c *testClient) handlers() sfuclient.Events {
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			c.speakers = append(c.speakers, sp)
+		},
+		Wanted: func(w signal.Wanted) {
+			c.mu.Lock()
+			c.wanted = append(c.wanted, wantedSeen{sid: w.SID, rids: w.RIDs, at: time.Now()})
+			f := c.onWanted
+			c.mu.Unlock()
+			if f != nil {
+				f(w)
+			}
 		},
 		Connection: func(pc signal.PC, st webrtc.PeerConnectionState) {
 			c.mu.Lock()

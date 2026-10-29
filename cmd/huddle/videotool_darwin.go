@@ -64,7 +64,7 @@ func runVideo(args []string) error {
 	out := fs.String("out", "", "record what's received in this directory: frames.csv, estimate.csv, PNGs, heard.wav")
 	loop := fs.Bool("loop", true, "with -in and -out: receive as a second participant in this process (latency by frame number); false: one participant sends and receives the others")
 	dur := fs.Duration("for", 20*time.Second, "how long")
-	want := fs.String("want", "", "ask for every received video at this size (SetSize), WxH")
+	want := fs.String("want", "", "ask for every received video at this size (SetSize), WxH; off: turn it off (0×0, as the app does a tile it doesn't show)")
 	switchTo := fs.String("switch", "", "then ask for WxH@T: this size, T after joining (1280x720@8s)")
 	uplink := fs.String("uplink", "", "narrow what's sent to RATE bits a second (1M, 600k)")
 	pngs := fs.Int("pngs", 6, "sample frames written as PNGs")
@@ -112,7 +112,11 @@ func runVideo(args []string) error {
 	}
 	var wantW, wantH, swW, swH int
 	var swAt time.Duration
-	if *want != "" {
+	switch *want {
+	case "":
+	case "off":
+		wantW, wantH = -1, -1
+	default:
 		var err error
 		if wantW, wantH, err = parseSize(*want); err != nil {
 			return err
@@ -298,7 +302,11 @@ loop:
 			var layers []string
 			for _, v := range s.Videos {
 				for i, b := range v.Bitrate {
-					layers = append(layers, fmt.Sprintf("%s:%dp=%dk/%dkf", v.Kind, v.Layers[i].H, b/1000, v.KeysOut[i]))
+					l := fmt.Sprintf("%s:%dp=%dk/%dkf", v.Kind, v.Layers[i].H, b/1000, v.KeysOut[i])
+					if b == 0 && i < len(v.Paused) {
+						l += "/" + v.Paused[i] // unwanted (Dynacast) or bandwidth
+					}
+					layers = append(layers, l)
 				}
 			}
 			line += fmt.Sprintf(" estimate %dk (usable %dk), sent %dk, pacer %v, layers %s", s.Raw/1000, s.Usable/1000, s.Sent/1000,
@@ -537,15 +545,19 @@ func (r *videoRun) publishPattern(room rtc.Room, k rtc.VideoKind, w, h, fps, fla
 	return p.Stop, nil
 }
 
-// events are the receiver's: each video added is asked for at -want.
+// events are the receiver's: each video added is asked for at -want, or
+// turned off.
 func (r *videoRun) events() rtc.Events {
 	return rtc.Events{VideoAdded: func(t rtc.VideoTrack) {
 		r.mu.Lock()
 		r.tracks = append(r.tracks, t)
 		want := r.want
 		r.mu.Unlock()
-		if want[0] > 0 {
+		switch {
+		case want[0] > 0:
 			t.SetSize(want[0], want[1])
+		case want[0] < 0:
+			t.SetSize(0, 0)
 		}
 	}}
 }

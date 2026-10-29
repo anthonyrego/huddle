@@ -113,9 +113,10 @@ func (pub *publication) forwardLayer(l *layer, tr *webrtc.TrackRemote, p *rtp.Pa
 	}
 	l.lastAt.Store(now.UnixNano())
 	if !l.alive.Load() && l.alive.CompareAndSwap(false, true) {
-		// A layer starting again opens with a keyframe (a new encoder) as
-		// often as not, and this packet may be it: viewers moving to it ask
-		// for one only if its packets turn out not to start one.
+		// A layer starting again opens with a keyframe (a new encoder, or
+		// one its sender resumes after Dynacast paused it) as often as not,
+		// and this packet may be it: viewers moving to it ask for one only
+		// if its packets turn out not to start one.
 		pub.owner.log.Info("sfu: a layer runs", "track", pub.sid, "rid", l.info.RID)
 		pub.layersChanged(now, false)
 	}

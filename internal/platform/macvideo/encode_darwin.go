@@ -51,6 +51,11 @@ type Encoder struct {
 	seq     uint64
 	sent    map[uint64]sentFrame
 	dropped int
+	// The time taken out of the timestamps VideoToolbox is given (Skipped),
+	// the newest timestamp handed over, and whether the next closes a gap.
+	shift   time.Duration
+	last    time.Duration
+	skipped bool
 }
 
 // The encoders, by the id their output callback gets.
@@ -175,13 +180,19 @@ func (e *Encoder) NewBuffer() (*Buffer, error) {
 // PTS must rise from call to call. forceKey asks for a keyframe (for a
 // receiver's PLI).
 func (e *Encoder) Encode(b *Buffer, pts time.Duration, forceKey bool) error {
+	frame := time.Second / time.Duration(e.cfg.FPS)
 	e.mu.Lock()
+	if e.skipped && e.seq > 0 && pts-e.last > frame {
+		e.shift += pts - e.last - frame
+	}
+	e.skipped, e.last = false, pts
 	e.seq++
 	seq := e.seq
 	e.sent[seq] = sentFrame{time.Now(), pts}
+	given := pts - e.shift
 	e.mu.Unlock()
-	t := cmTime{Value: pts.Microseconds(), Timescale: 1_000_000, Flags: cmTimeValid}
-	d := cmTime{Value: int64(1_000_000 / e.cfg.FPS), Timescale: 1_000_000, Flags: cmTimeValid}
+	t := cmTime{Value: given.Microseconds(), Timescale: 1_000_000, Flags: cmTimeValid}
+	d := cmTime{Value: int64(frame / time.Microsecond), Timescale: 1_000_000, Flags: cmTimeValid}
 	var props uintptr
 	if forceKey {
 		props = cfDict(k("kVTEncodeFrameOptionKey_ForceKeyFrame"), cfBool(true))
@@ -195,6 +206,21 @@ func (e *Encoder) Encode(b *Buffer, pts time.Duration, forceKey bool) error {
 		return err
 	}
 	return nil
+}
+
+// Skipped says the encoder is given no pictures for a while on purpose
+// (its layer is paused). VideoToolbox's rate control counts a gap in the
+// timestamps as bits not spent, and spends them as soon as pictures come
+// again: a 720p encoder at 1.7 Mbps, skipped for 6 s and set to 680 kbps,
+// sent 1.7–1.9 Mbps for its next 4 s (with the gap taken out, about 1.06
+// Mbps from the first second, as one never skipped). So the next picture's
+// timestamp, as VideoToolbox is given it, follows the last one's by a
+// frame, and every later one moves back as much; what comes out keeps the
+// timestamps Encode was given.
+func (e *Encoder) Skipped() {
+	e.mu.Lock()
+	e.skipped = true
+	e.mu.Unlock()
 }
 
 // Flush waits for every frame handed over to come out.

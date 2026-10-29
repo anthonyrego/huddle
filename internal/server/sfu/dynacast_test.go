@@ -162,6 +162,31 @@ func TestDynacastWanted(t *testing.T) {
 	}
 }
 
+// Every layer stays wanted for dynacastFirst after the publish, whatever
+// viewers want meanwhile: a viewer of the top layer moving to the smallest
+// a second in doesn't cut that short.
+func TestDynacastFirstHold(t *testing.T) {
+	ts := newTestSFU(t, nil)
+	a := ts.join(t, "r", "a", sfuclient.Options{})
+	b := ts.join(t, "r", "b", sfuclient.Options{})
+	cam := publishCamera(t, a)
+	cam.follow(a)
+	published := time.Now()
+	waitFor(t, wait, "b to be offered a's camera", func() bool { return b.from("a", signal.Video) != nil })
+	b.settings(t, "a", 1280, 720, true)
+	waitUnits(t, b, "a", "f", 10)
+	moved := time.Now()
+	b.settings(t, "a", 320, 180, true)
+	at := waitWanted(t, a, cam.sid, "q")
+	t.Logf("b at 1280x720, then 320x180 %v in: wanted [q] %v after the publish", moved.Sub(published).Round(time.Millisecond), at.Sub(published).Round(time.Millisecond))
+	if d := at.Sub(published); d < dynacastFirst-tick {
+		t.Errorf("wanted [q] %v after the publish, before %v", d, dynacastFirst)
+	}
+	if ws := a.wantedHeard(); len(ws) != 1 {
+		t.Errorf("wanted %d times", len(ws))
+	}
+}
+
 // A tile that shrinks and grows back within dynacastShrink never stops the
 // larger layer's encoder: the publisher hears a set without it only once
 // it has been out of the set that long.

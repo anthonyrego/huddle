@@ -73,8 +73,8 @@ func (pub *publication) updateWanted(now time.Time) {
 	d := &pub.dyn
 	tell := make([]bool, len(in))
 	for i, w := range in {
-		if w {
-			d.until[i] = now.Add(dynacastShrink)
+		if until := now.Add(dynacastShrink); w && until.After(d.until[i]) {
+			d.until[i] = until
 		}
 		tell[i] = now.Before(d.until[i])
 	}

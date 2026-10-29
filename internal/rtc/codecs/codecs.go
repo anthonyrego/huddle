@@ -27,13 +27,13 @@ const (
 
 // Opus is the voice: 48 kHz, 20 ms frames, in-band FEC and DTX. Channels is
 // 2 as WebRTC requires; what's sent is mono. Its loss is covered by FEC and
-// concealment, not retransmission, so it takes no nack.
+// concealment, not retransmission, so it takes no nack; and it isn't
+// counted by congestion control (Register).
 var Opus = webrtc.RTPCodecCapability{
-	MimeType:     webrtc.MimeTypeOpus,
-	ClockRate:    48000,
-	Channels:     2,
-	SDPFmtpLine:  "minptime=10;useinbandfec=1;usedtx=1",
-	RTCPFeedback: []webrtc.RTCPFeedback{{Type: webrtc.TypeRTCPFBTransportCC}},
+	MimeType:    webrtc.MimeTypeOpus,
+	ClockRate:   48000,
+	Channels:    2,
+	SDPFmtpLine: "minptime=10;useinbandfec=1;usedtx=1",
 }
 
 // H264 is video: Constrained Baseline, what VideoToolbox's real-time
@@ -51,10 +51,19 @@ var H264 = webrtc.RTPCodecCapability{
 }
 
 // Register puts the codecs and header extensions on m: transport-wide
-// sequence numbers on everything (congestion control), the RFC 6464 audio
-// level on audio (the SFU's speaker detection reads it), and mid and rid on
-// video (a simulcast layer's SSRC isn't in the SDP; the receiver learns it
-// from these on the first packets).
+// sequence numbers on video (congestion control), the RFC 6464 audio level
+// on audio (the SFU's speaker detection reads it), and mid and rid on video
+// (a simulcast layer's SSRC isn't in the SDP; the receiver learns it from
+// these on the first packets).
+//
+// The voice carries no transport-wide numbers, as with LiveKit. The
+// numbers are given as packets are written, and the client's pacer sends
+// the voice at once, ahead of the video it holds: numbered, the voice went
+// out ahead of video numbered before it, and pion's GCC, reading the far
+// end's feedback in number order, saw departures run backwards whenever a
+// queue built (a narrow uplink, a keyframe) and took it for congestion.
+// At 1 Mbps up with the voice on, the estimate fell to its floor and the
+// 360p layer paused for most of a 40 s run, three runs in four.
 func Register(m *webrtc.MediaEngine) error {
 	if err := m.RegisterCodec(webrtc.RTPCodecParameters{RTPCodecCapability: Opus, PayloadType: OpusPT}, webrtc.RTPCodecTypeAudio); err != nil {
 		return fmt.Errorf("register opus: %w", err)
@@ -66,7 +75,6 @@ func Register(m *webrtc.MediaEngine) error {
 		uri  string
 		kind webrtc.RTPCodecType
 	}{
-		{sdp.TransportCCURI, webrtc.RTPCodecTypeAudio},
 		{sdp.TransportCCURI, webrtc.RTPCodecTypeVideo},
 		{sdp.AudioLevelURI, webrtc.RTPCodecTypeAudio},
 		{sdp.SDESMidURI, webrtc.RTPCodecTypeVideo},

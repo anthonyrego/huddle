@@ -536,10 +536,13 @@ func TestPublishEstimator(t *testing.T) {
 		t.Fatalf("%d estimators by the time Join returned, want the publish connection's", n)
 	}
 	start := time.Now()
-	sp, _ := publishVoice(t, a, 25)
+	cam := publishCamera(t, a) // video: the voice isn't counted by congestion control
 	// The SFU's TWCC feedback moves the estimate off where it began.
 	waitFor(t, wait, "the estimate to move", func() bool { return ests[0].GetTargetBitrate() != 1_000_000 })
-	t.Logf("estimate %d bps %v after publishing (%d frames sent)", ests[0].GetTargetBitrate(), time.Since(start).Round(time.Millisecond), sp.sent.Load())
+	cam.mu.Lock()
+	frames := cam.frame
+	cam.mu.Unlock()
+	t.Logf("estimate %d bps %v after publishing (%d frames sent)", ests[0].GetTargetBitrate(), time.Since(start).Round(time.Millisecond), frames)
 	if n := count(); n != 1 {
 		t.Errorf("%d estimators after publishing", n)
 	}

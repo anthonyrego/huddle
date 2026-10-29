@@ -484,9 +484,14 @@ func TestVideoPublish(t *testing.T) {
 	}
 	pub := ts.s.room("r").participant("a").publication(sid)
 	waitFor(t, wait, "the SFU to receive the three layers", func() bool {
-		pub.mu.Lock()
-		defer pub.mu.Unlock()
-		return len(pub.layers) == 3
+		pub.lmu.Lock()
+		defer pub.lmu.Unlock()
+		for _, l := range pub.layers {
+			if l.ssrc == 0 {
+				return false
+			}
+		}
+		return true
 	})
 	time.Sleep(time.Second)
 	close(stop)
@@ -495,8 +500,10 @@ func TestVideoPublish(t *testing.T) {
 	for _, x := range []*testClient{b, c} {
 		checkRun(t, x.id+" hearing a through the camera's negotiation", x.framesFrom("a"), readyAt, sent["a"]-1)
 		x.mu.Lock()
+		// The stand-in frames carry no SPS, so none starts a keyframe
+		// the forwarder could begin at (video_test.go sends real ones).
 		if h := x.fromLocked("a", signal.Video); h == nil || h.packets != 0 {
-			t.Errorf("%s: a's camera sent video (forwarding is step 3)", x.id)
+			t.Errorf("%s: sent frames that aren't a keyframe's", x.id)
 		}
 		x.mu.Unlock()
 	}

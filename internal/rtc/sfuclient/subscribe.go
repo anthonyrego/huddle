@@ -11,8 +11,10 @@ import (
 )
 
 // Settings tells the server how this client wants a video track it's sent:
-// the size it's shown at, in pixels, or off (Enabled false: nothing is
-// sent). The server sends a video track nothing until its first settings.
+// the size it's shown at, in pixels, or off (Enabled false, or no size:
+// nothing is sent). The server sends a video track nothing until its first
+// settings, or a quarter of a second after the track is on the receive
+// connection (then the largest layer), as signal.Settings says.
 func (s *Session) Settings(st signal.Settings) error {
 	return s.send(signal.KindSettings, st)
 }

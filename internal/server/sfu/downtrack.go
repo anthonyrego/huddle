@@ -35,6 +35,10 @@ const newRunGap = 20 * time.Millisecond
 // number added by pion). Nothing is written before the publisher sends, or
 // before the subscriber's connection is up: no padding, ever.
 //
+// A video's down track sends one simulcast layer at a time, chosen from
+// the viewer's settings and the layers running (downvideo.go), through a
+// forwarder that keeps its sequence numbers unbroken across switches.
+//
 // It writes its own sender reports, translated from the publisher's
 // (report): pion's would map RTP time to when the SFU forwarded each
 // packet, which would put a person's voice and video out of step by
@@ -70,10 +74,25 @@ type downTrack struct {
 	packets, octets uint32
 	reports         int
 	lastReport      time.Time
+
+	// A video's (fwd nil for a voice): the forwarder; the layer the
+	// viewer's settings want (-1: none, off or not said yet); whether
+	// they've said (or settingsWait has gone by); when the track went on
+	// the connection; and the layer last aimed at, for the log.
+	fwd     *forwarder
+	emit    emitFunc
+	want    int
+	asked   bool
+	boundAt time.Time
+	aimed   int
 }
 
 func newDownTrack(pub *publication, sub *participant) *downTrack {
 	d := &downTrack{pub: pub, sub: sub, clock: pub.codec.ClockRate}
+	if pub.kind == webrtc.RTPCodecTypeVideo {
+		d.fwd, d.want, d.aimed = newForwarder(uint16(rand.Uint32())), -1, -1
+		d.emit = d.emitLocked
+	}
 	if sub.local != nil {
 		d.voice = newVoice(pub.codec)
 		d.ssrc, d.pt = rand.Uint32(), codecs.OpusPT
@@ -117,8 +136,9 @@ func (d *downTrack) Bind(ctx webrtc.TrackLocalContext) (webrtc.RTPCodecParameter
 	}
 	d.mu.Lock()
 	d.bound, d.ssrc, d.pt, d.levelID, d.w = true, uint32(ctx.SSRC()), uint8(codec.PayloadType), levelID, ctx.WriteStream()
+	d.boundAt = time.Now()
 	d.mu.Unlock()
-	go d.readRTCP(ctx.RTCPReader())
+	go d.readRTCP(ctx.RTCPReader(), uint32(ctx.SSRC()))
 	d.sub.log.Debug("sfu: subscribed", "track", d.pub.sid, "from", d.pub.owner.grant.Identity, "kind", d.pub.kind.String())
 	return codec, nil
 }
@@ -133,12 +153,36 @@ func (d *downTrack) Unbind(webrtc.TrackLocalContext) error {
 
 // readRTCP reads what the subscriber says about the track until the
 // binding ends: pion's interceptors act on RTCP as it's read (the NACK
-// responder, reports).
-func (d *downTrack) readRTCP(r interceptor.RTCPReader) {
+// responder answers NACKs from what the track sent, reports). A viewer's
+// PLI or FIR for a video asks the layer it's sent for a keyframe.
+func (d *downTrack) readRTCP(r interceptor.RTCPReader, ssrc uint32) {
 	b := make([]byte, 1500)
 	for {
-		if _, _, err := r.Read(b, interceptor.Attributes{}); err != nil {
+		n, _, err := r.Read(b, interceptor.Attributes{})
+		if err != nil {
 			return
+		}
+		if d.fwd == nil {
+			continue
+		}
+		pkts, err := rtcp.Unmarshal(b[:n])
+		if err != nil {
+			continue
+		}
+		for _, p := range pkts {
+			switch p := p.(type) {
+			case *rtcp.PictureLossIndication:
+				if p.MediaSSRC == ssrc {
+					d.viewerAsksKey(time.Now())
+				}
+			case *rtcp.FullIntraRequest:
+				for _, e := range p.FIR {
+					if e.SSRC == ssrc {
+						d.viewerAsksKey(time.Now())
+						break
+					}
+				}
+			}
 		}
 	}
 }
@@ -253,18 +297,31 @@ func (d *downTrack) reportIfDue(now time.Time) {
 // comes over the same connection with the same delay, so their reports
 // keep the publisher's timing between them: the app's lip sync holds. No
 // report from the publisher yet (or not on the stream being sent), no
-// report.
+// report. A video's is the layer being sent's (a publication's layers
+// share one timestamp base, passed through), none while it's off.
 func (d *downTrack) report(now time.Time) {
-	sr := d.pub.report()
 	d.mu.Lock()
-	if !d.bound || d.packets == 0 || !sr.ok || sr.ssrc != d.inSSRC {
+	if !d.bound || d.packets == 0 {
+		d.mu.Unlock()
+		return
+	}
+	var sr senderReport
+	var off uint32
+	if d.fwd != nil {
+		sr = d.pub.layerReport(d.fwd.current)
+	} else if sr = d.pub.report(); sr.ssrc != d.inSSRC {
+		sr.ok = false
+	} else {
+		off = d.tsOff
+	}
+	if !sr.ok {
 		d.mu.Unlock()
 		return
 	}
 	pkt := &rtcp.SenderReport{
 		SSRC:        d.ssrc,
 		NTPTime:     toNTP(now),
-		RTPTime:     sr.rtp + uint32(now.Sub(sr.at).Seconds()*float64(d.clock)) + d.tsOff,
+		RTPTime:     sr.rtp + uint32(now.Sub(sr.at).Seconds()*float64(d.clock)) + off,
 		PacketCount: d.packets,
 		OctetCount:  d.octets,
 	}

@@ -10,7 +10,9 @@
 // On Sub the server sends everyone else's tracks: it offers, the client
 // answers. The server always sends a track message before the offer that
 // carries the track, so a client knows every track it's offered. ICE
-// candidates trickle both ways, named by connection.
+// candidates trickle both ways, named by connection. A viewer's settings
+// say the size it shows a video at; the video's publisher hears wanted,
+// the layers anyone is sent, and pauses the rest (Dynacast).
 //
 // What arrives on Sub is named so the client can match it: a down track's
 // ID is the track's SID and its stream ID is the publisher's identity. What
@@ -207,7 +209,10 @@ type Untrack struct {
 }
 
 // Wanted tells a publisher which layers of one of its video tracks anyone
-// is sent (Dynacast): the rest can pause.
+// is sent (Dynacast): the rest can pause. A publisher sends every layer
+// until it hears otherwise. The server sends it at once when the set
+// grows, and a few seconds after a layer leaves it. RIDs may be empty:
+// nobody is sent the track.
 type Wanted struct {
 	SID  string   `json:"sid"`
 	RIDs []string `json:"rids"`

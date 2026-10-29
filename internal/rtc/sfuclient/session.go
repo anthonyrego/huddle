@@ -66,6 +66,11 @@ type Events struct {
 	TrackRemoved func(*RemoteTrack)
 	// Speakers is who's talking, loudest first; empty when no one is.
 	Speakers func([]signal.Speaker)
+	// Wanted is the server saying which layers of a video this client
+	// publishes anyone is sent (Dynacast), by the video's SID and the
+	// layers' RIDs: the rest can pause. Until the first, every layer is
+	// wanted. It may come as soon as Publish has the SID.
+	Wanted func(signal.Wanted)
 	// Connection is one of the two connections changing state.
 	Connection func(pc signal.PC, state webrtc.PeerConnectionState)
 	// Disconnected is the session ending without Close: the server said
@@ -412,6 +417,16 @@ func (s *Session) handle(e signal.Envelope) error {
 			// Published after the publish was given up on.
 			s.unpublishLate(p.CID, p.SID)
 		}
+	case signal.KindWanted:
+		var w signal.Wanted
+		if err := e.Decode(&w); err != nil {
+			return err
+		}
+		s.push(func() {
+			if s.ev.Wanted != nil {
+				s.ev.Wanted(w)
+			}
+		})
 	case signal.KindSpeakers:
 		var sp signal.Speakers
 		if err := e.Decode(&sp); err != nil {

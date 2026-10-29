@@ -262,6 +262,12 @@ replaces lksdk behind `rtc.Connector`. LiveKit stays beside it
       smaller layer wanted again could pause a running larger one.
 - **Step 5:**
   - builtin becomes the default, and the user's two-Mac gates run on it.
+    Done on the agents' side (2026-10-29): `make server` needs no LiveKit;
+    every agent gate rerun on the default (AGENTS.md, step 5a). Found on the
+    way: the whiteboard could lose a command behind a question whose last
+    turn-complete never came, and the jitter buffer told lip sync a stale
+    position after a silence (a frame held 350 ms behind a narrow uplink).
+    Both fixed. Waiting on the user's two-Mac gate.
   - Then LiveKit, lksdk, the protocol module and `lktoken` go.
 
 ## Later stages

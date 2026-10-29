@@ -9,23 +9,23 @@ meeting's timeline.
 
 A native macOS app in Go, drawn with our own renderer on SDL3's GPU API
 (Metal), with no cgo: native libraries load through
-[purego](https://github.com/ebitengine/purego). Media goes through a
-self-hosted [LiveKit](https://livekit.io) server; the whiteboard runs on
-the server with Gemini's realtime models.
+[purego](https://github.com/ebitengine/purego). Media goes through the
+server's own SFU (adapted from [LiveKit](https://livekit.io)'s, on
+[pion](https://github.com/pion/webrtc)); the whiteboard runs on the server
+with Gemini's realtime models.
 
 **Status:** early. Stage 1 (voice and the whiteboard, on a local network) is
 being built; see [docs/plan.md](docs/plan.md).
 
 ## Building
 
-Needs Go (the toolchain in `go.mod` is fetched automatically), Docker for
-Postgres, and `brew install livekit`.
+Needs Go (the toolchain in `go.mod` is fetched automatically) and Docker for
+Postgres.
 
 ```
 make check      # vet, tests, shader manifest, no-cgo build
 make dev-up     # Postgres
-make livekit    # LiveKit, in another terminal
-make server     # the server, in another terminal (dev mode, private networks only)
+make server     # the server and its media, in another terminal (dev mode, private networks only)
 make run ROOM=test
 ```
 

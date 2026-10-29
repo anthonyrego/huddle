@@ -29,8 +29,8 @@ const (
 	keyEvery = 200 * time.Millisecond
 	// settingsWait is how long a video down track waits for its viewer's
 	// first settings before sending the top layer anyway: a client that
-	// never says a size (huddle video without -want) is sent what LiveKit
-	// sends one, rather than nothing. The app says a size within a frame
+	// never says a size (huddle video without -want) is sent the top layer,
+	// as LiveKit's sends one, rather than nothing. The app says a size within a frame
 	// of the track arriving, so it never waits this long.
 	settingsWait = 250 * time.Millisecond
 )

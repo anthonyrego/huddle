@@ -12,7 +12,7 @@ together.
 | Area | Decision |
 |---|---|
 | Platform | macOS only for now (Apple Silicon, macOS 14+). Windows and Linux are deferred; the core stays portable |
-| Media | Voice, then camera and screen share. Pure Go clients over our own SFU inside the server (on pion, adapted from LiveKit's), no cgo. Stages 1 and 2 ran on a self-hosted LiveKit |
+| Media | Voice, then camera and screen share. Pure Go clients over our own SFU inside the server (on pion, adapted from LiveKit's), no cgo. Stages 1 and 2 ran on a self-hosted LiveKit, removed in the media server's step 5 |
 | AI | Gemini realtime. Per meeting, the whiteboard's voice is `answers` (default: silent while drawing, speaks only when asked a question), `muted` or `narrate` |
 | Board | Only the AI writes. People direct it by voice, a typed command or a push-to-address key |
 | Replay | Board versions, transcript and audio |
@@ -122,8 +122,9 @@ to a first video frame it was blamed for turned out to be our own
 assembler: step 1.) So the SFU moves into `huddled serve`, written
 here on pion and adapted from LiveKit's server and SDK (Apache 2.0: the
 license and NOTICE ship with the code and the app), and our own client
-replaces lksdk behind `rtc.Connector`. LiveKit stays beside it
-(`HUDDLE_MEDIA=livekit|builtin`) until every gate matches its numbers.
+replaces lksdk behind `rtc.Connector`. LiveKit stayed beside it
+(`HUDDLE_MEDIA=livekit|builtin`) until every gate matched its numbers, and
+went in step 5.
 
 - **The shape:**
   - Media on one UDP port, the HTTP port's number, advertising the LAN
@@ -260,15 +261,17 @@ replaces lksdk behind `rtc.Connector`. LiveKit stays beside it
       Dynacast, was never chosen; it's now chosen and wanted. And in the
       publisher, the pacer's rate fell with the paused layers, and a
       smaller layer wanted again could pause a running larger one.
-- **Step 5:**
-  - builtin becomes the default, and the user's two-Mac gates run on it.
-    Done on the agents' side (2026-10-29): `make server` needs no LiveKit;
-    every agent gate rerun on the default (AGENTS.md, step 5a). Found on the
-    way: the whiteboard could lose a command behind a question whose last
-    turn-complete never came, and the jitter buffer told lip sync a stale
-    position after a silence (a frame held 350 ms behind a narrow uplink).
-    Both fixed. Waiting on the user's two-Mac gate.
-  - Then LiveKit, lksdk, the protocol module and `lktoken` go.
+- **Step 5, builtin the default, then LiveKit gone (done 2026-10-29):**
+  - builtin became the default and every agent gate was rerun on it
+    (AGENTS.md, step 5a). Found on the way: the whiteboard could lose a
+    command behind a question whose last turn-complete never came, and the
+    jitter buffer told lip sync a stale position after a silence (a frame
+    held 350 ms behind a narrow uplink). Both fixed.
+  - The user's two-Mac gates passed on it.
+  - Then LiveKit, lksdk, the protocol module and `lktoken` went (step 5b):
+    the module graph from 231 modules to 114, the app from 57 MB to 39 MB,
+    the server from 63 MB to 45 MB. The dev join names huddled's own SFU,
+    and an app refuses a server that names another.
 
 ## Later stages
 
@@ -288,7 +291,6 @@ replaces lksdk behind `rtc.Connector`. LiveKit stays beside it
   resumption, with context compression for unlimited length. The streaming
   transcription model takes 16 kHz PCM, returns text, and runs 10-minute
   sessions without speaker labels (each participant's own track gives those).
-- LiveKit's Go SDK takes already-encoded media; its root package needs no cgo.
 - The app's first video frame waits on its own assembler, not the SFU: a
   subscription starts with a keyframe, and starting a unit at the
   keyframe's first packet shows it at once.

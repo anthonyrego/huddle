@@ -1,7 +1,7 @@
 // Package sfu is huddle's media server, inside huddled serve: people publish
 // their voice, camera and screen to it, and it forwards each to everyone
-// else, choosing a simulcast layer for each viewer. It replaces LiveKit's
-// server, adapted from it where noted (Apache 2.0; see NOTICE). Pure.
+// else, choosing a simulcast layer for each viewer. Adapted from LiveKit's
+// server where noted (Apache 2.0; see NOTICE). Pure.
 package sfu
 
 import (

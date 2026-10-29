@@ -1,9 +1,8 @@
 package main
 
 // serve: the HTTP API and the meeting WebSocket over Postgres, and the
-// media server's part (media.go: HUDDLE_MEDIA, HUDDLE_NODE_IP,
-// HUDDLE_RTC_SECRET). Stage 1 has no signing in, so it only runs in dev
-// mode (HUDDLE_DEV=1).
+// media server's part (media.go: HUDDLE_NODE_IP, HUDDLE_RTC_SECRET). Stage
+// 1 has no signing in, so it only runs in dev mode (HUDDLE_DEV=1).
 
 import (
 	"context"

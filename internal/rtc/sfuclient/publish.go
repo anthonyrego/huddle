@@ -126,8 +126,21 @@ func (s *Session) Publish(ctx context.Context, req signal.Publish, tracks ...*Tr
 	case <-time.After(publishWait):
 		res.err = errors.New("no answer from the server")
 	}
+	if res.err != nil {
+		gaveUp()
+	}
 	forget()
 	if res.err != nil {
+		// The answer may have come between giving up and forget: once
+		// forgotten, nothing more is sent on ch. A track published after
+		// all is unpublished, or it would stay on the server.
+		select {
+		case late := <-ch:
+			if late.err == nil {
+				s.unpublishLate(req.CID, late.sid)
+			}
+		default:
+		}
 		s.pub.pc.RemoveTrack(tx.Sender())
 		return "", fmt.Errorf("sfuclient: publish %s: %w", req.CID, res.err)
 	}
@@ -155,6 +168,20 @@ func (s *Session) Unpublish(sid string) error {
 	}
 	s.pub.negotiate()
 	return err
+}
+
+// gaveUp runs when a publish has given up waiting, before it's forgotten
+// (tests widen the gap between the two).
+var gaveUp = func() {}
+
+// unpublishLate unpublishes a track the server published after its
+// publish was given up on (timed out, or failed by an error from the
+// server): nobody writes to it, and nobody would unpublish it.
+func (s *Session) unpublishLate(cid, sid string) {
+	s.log.Info("sfuclient: published after giving up; unpublishing", "cid", cid, "sid", sid)
+	if err := s.send(signal.KindUnpublish, signal.Unpublish{SID: sid}); err != nil {
+		s.log.Debug("sfuclient: unpublish", "sid", sid, "err", err)
+	}
 }
 
 // Mute tells the server a published track is muted, or not; it shows so

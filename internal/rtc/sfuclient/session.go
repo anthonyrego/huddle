@@ -402,11 +402,16 @@ func (s *Session) handle(e signal.Envelope) error {
 			return err
 		}
 		s.mu.Lock()
-		if ch := s.waiting[p.CID]; ch != nil {
+		ch := s.waiting[p.CID]
+		if ch != nil {
 			ch <- published{sid: p.SID}
 			delete(s.waiting, p.CID)
 		}
 		s.mu.Unlock()
+		if ch == nil {
+			// Published after the publish was given up on.
+			s.unpublishLate(p.CID, p.SID)
+		}
 	case signal.KindSpeakers:
 		var sp signal.Speakers
 		if err := e.Decode(&sp); err != nil {

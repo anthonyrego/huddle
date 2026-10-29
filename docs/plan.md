@@ -186,12 +186,36 @@ replaces lksdk behind `rtc.Connector`. LiveKit stays beside it
   - **Found:** pion announces a track before its first packet, and its
     codec stays empty until one is read, so the room takes the codec
     from what was negotiated.
-- **Step 3, video:**
-  - **Gate:** Track P's numbers, plus:
-    - a first frame within 300 ms
-    - a 342×192 tile gets 360p
-    - lip sync under a 1 Mbps uplink
-    - no growing lag at 20% loss with jitter
+- **Step 3, video (done 2026-10-28):**
+  - Two worktrees, merged:
+    - The SFU forwards video: each layer read by its RID, a forwarder per
+      viewer, the smallest layer at least the size asked for (the nearest
+      running one while its publisher pauses it), a keyframe asked for at
+      once and at most every 200 ms a layer, sender reports translated
+      from the layer being sent.
+    - The app's receive side: video under heavy loss, and lip sync from
+      the first frame, timed by when the voice's and video's packets come.
+  - **Gate, measured:** run for run, the video set matched or beat
+    LiveKit:
+    - a viewer's first frame 100–117 ms after the track arrived
+    - a 342×192 tile at 360p
+    - 720p 63–67 ms after asking (LiveKit's 1.1 s)
+    - lip sync worst within 19 ms, also at 1 Mbps
+    - at 20% loss with jitter, no freeze over 60 s (LiveKit 13–15)
+    - five cameras, a share and three viewers at 11% of a core
+  - **Found:**
+    - The voice carried transport-wide numbers, and the pacer sends it
+      ahead of queued video, so GCC saw departures run backwards and took
+      that for congestion. At 1 Mbps up, the 360p layer paused for most
+      of a run. The voice now goes unnumbered, as on LiveKit.
+    - With no RTX, a resend has its packet's own sequence number, so
+      SRTP's replay window threw away every resend of a packet the
+      receive-side simulation had dropped after decrypting it. Replay
+      protection is off under simulation only.
+    - Video fell behind at heavy loss because each hole was waited for
+      250 ms from when the assembler reached it, not from when it
+      appeared, so the waits queued. LiveKit made it worse: a PLI stops
+      its retransmissions until the next keyframe.
 - **Step 4:** Dynacast (unwatched layers stop), then the downlink's own
   allocation (deferrable on the LAN).
 - **Step 5:**

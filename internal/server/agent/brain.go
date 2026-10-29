@@ -37,6 +37,12 @@ type brain struct {
 	since      time.Time
 	failures   int
 	retryAt    time.Time
+	// owed: a turn ended (no reply, timeout) while a generation of it was
+	// still out, so its last turn-complete may yet come. The next one that
+	// comes before anything of the next turn's own is that one: sending a
+	// turn ends a generation the model hung on, and its turn-complete
+	// follows within milliseconds.
+	owed bool
 }
 
 type connectResult struct {
@@ -108,6 +114,7 @@ func (b *brain) connected(ctx context.Context, a *Agent, r connectResult) {
 		return
 	}
 	b.sess, b.goAway, b.failures, b.ever, b.since = r.sess, false, 0, true, time.Now()
+	b.owed = false
 	how := "fresh"
 	if r.resumed {
 		how = "resumed"
@@ -152,6 +159,7 @@ type turn struct {
 	spoke    bool      // it called speak
 	muted    bool      // someone said stop
 	awaiting bool      // a non-blocking answer went WHEN_IDLE: another generation follows
+	heard    bool      // the brain sent something of this turn's own: a call, audio or text
 	ops      int
 	versions int
 	frames   int
@@ -213,6 +221,7 @@ func (a *Agent) endTurn(why string) {
 		return
 	}
 	a.turn = nil
+	a.brain.owed = t.doneAt.IsZero()
 	if t.frames > 0 {
 		a.trace(Event{Kind: EvAudio, Command: t.cmd.ID, N: t.frames})
 	}
@@ -235,7 +244,7 @@ func (a *Agent) onBrain(ctx context.Context, ev live.Event, ok bool) {
 			a.log.Warn("agent: brain closed", "err", ev.Err)
 			a.trace(Event{Kind: EvError, Detail: "brain closed: " + ev.Err.Error()})
 		}
-		b.sess = nil
+		b.sess, b.owed = nil, false
 		if t := a.turn; t != nil {
 			// Send it again on the next connection, unless it already drew.
 			a.turn = nil
@@ -252,6 +261,10 @@ func (a *Agent) onBrain(ctx context.Context, ev live.Event, ok bool) {
 	t := a.turn
 	if t != nil {
 		t.lastEv = time.Now()
+		switch ev.Kind {
+		case live.ToolCall, live.Audio, live.OutputText:
+			t.heard, b.owed = true, false
+		}
 	}
 	switch ev.Kind {
 	case live.ToolCall:
@@ -284,6 +297,13 @@ func (a *Agent) onBrain(ctx context.Context, ev live.Event, ok bool) {
 		}
 	case live.TurnComplete:
 		if t == nil {
+			b.owed = false
+			return
+		}
+		if b.owed && !t.heard {
+			// The turn before's, which it ended without (b.owed).
+			b.owed = false
+			a.log.Info("agent: turn-complete of the turn before", "id", t.cmd.ID, "after", time.Since(t.started).Round(time.Millisecond))
 			return
 		}
 		t.doneAt = time.Now()

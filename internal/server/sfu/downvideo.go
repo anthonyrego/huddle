@@ -10,10 +10,11 @@ package sfu
 // else the nearest that does (pick): a publisher pauses its larger layers
 // when its uplink narrows, and its viewers move down and back up with it.
 //
-// A switch (a start, a size, turned back on, a layer paused or back) asks
-// the new layer for a keyframe at once, and again every keyEvery while the
-// viewer waits for it; the forwarder cuts over at its first packet once
-// the old layer has finished its frame. A viewer's own PLI or FIR goes to
+// A switch (a start, a size, turned back on, a layer paused) asks the new
+// layer for a keyframe at once, and again every keyEvery while the viewer
+// waits for it (a layer starting again is asked only if its packets don't
+// open with one, as a new encoder's do); the forwarder cuts over at its
+// first packet once the old layer has finished its frame. A viewer's own PLI or FIR goes to
 // the layer it's sent. The publication throttles what reaches a publisher
 // to one request per layer per keyEvery, whoever asks.
 
@@ -75,7 +76,7 @@ func (d *downTrack) settings(w, h int, on bool, now time.Time) {
 	d.asked, d.want = true, want
 	d.mu.Unlock()
 	d.sub.log.Debug("sfu: settings", "track", d.pub.sid, "w", w, "h", h, "on", on, "wants", d.ridOf(want))
-	d.retarget(now)
+	d.retarget(now, true)
 }
 
 // tick is the room's clock: a viewer that hasn't said a size settingsWait
@@ -92,14 +93,15 @@ func (d *downTrack) tick(now time.Time) {
 	d.mu.Unlock()
 	if due {
 		d.sub.log.Debug("sfu: no settings; the top layer", "track", d.pub.sid)
-		d.retarget(now)
+		d.retarget(now, true)
 	}
 }
 
 // retarget chooses the layer the viewer is sent, from what it wants and
-// what runs; a new one is asked for a keyframe at once (if the track can
-// send: otherwise its first packet once it can asks).
-func (d *downTrack) retarget(now time.Time) {
+// what runs; a new one is asked for a keyframe at once if ask (and the
+// track can send), else by the first of its packets that doesn't start
+// one (writeVideo).
+func (d *downTrack) retarget(now time.Time, ask bool) {
 	d.mu.Lock()
 	target := d.pub.pick(d.want)
 	key := d.fwd.setTarget(target)
@@ -111,7 +113,7 @@ func (d *downTrack) retarget(now time.Time) {
 	if changed {
 		d.sub.log.Info("sfu: video layer", "track", d.pub.sid, "from", d.pub.owner.grant.Identity, "layer", d.ridOf(target), "was", d.ridOf(from))
 	}
-	if key && ready && d.sub.down.connected() {
+	if key && ask && ready && d.sub.down.connected() {
 		d.pub.askKey(target, now)
 	}
 }

@@ -322,7 +322,10 @@ func TestSimulcastByRID(t *testing.T) {
 		if l == nil {
 			continue
 		}
-		if d := drop.dropped[uint32(l.ssrc)]; d == 0 {
+		drop.mu.Lock() // resends still pass through it
+		d := drop.dropped[uint32(l.ssrc)]
+		drop.mu.Unlock()
+		if d == 0 {
 			t.Errorf("%s: nothing dropped", key)
 		} else {
 			t.Logf("%s: %d packets heard, %d dropped once and resent; %d sender reports; first at %v", key, len(l.seqs), d, l.srs, l.first.Sub(start).Round(time.Millisecond))

@@ -276,7 +276,10 @@ func (r *room) settings(p *participant, st signal.Settings) {
 		p.log.Debug("sfu: settings for a video not sent", "track", st.SID)
 		return
 	}
-	dt.settings(st.W, st.H, st.Enabled, time.Now())
+	now := time.Now()
+	dt.area.Store(int64(st.W) * int64(st.H))
+	dt.settings(st.W, st.H, st.Enabled, now)
+	p.dl.changed(now)
 }
 
 // subscribeLocked has sub sent pub: a down track, fed by pub from now on,
@@ -287,6 +290,9 @@ func (r *room) subscribeLocked(sub *participant, pub *publication) {
 	dt := newDownTrack(pub, sub)
 	sub.downs[pub.sid] = dt
 	pub.addDown(dt)
+	if sub.dl != nil {
+		sub.dl.dirty.Store(true)
+	}
 	if sub.local != nil {
 		sub.local.voice(pub, dt.voice)
 	}
@@ -323,7 +329,8 @@ func (p *participant) pubsLocked() []*publication {
 }
 
 // run is the room's clock: sender reports on the down tracks, videos'
-// layers paused, viewers who never said a size, and who's talking.
+// layers paused, viewers who never said a size, each subscriber's
+// downlink, and who's talking.
 func (r *room) run() {
 	t := time.NewTicker(tick)
 	defer t.Stop()
@@ -338,11 +345,15 @@ func (r *room) run() {
 		r.mu.Lock()
 		var dts []*downTrack
 		var pubs []*publication
+		var dls []*downlink
 		for _, p := range r.order {
 			for _, dt := range p.downs {
 				dts = append(dts, dt)
 			}
 			pubs = append(pubs, p.pubsLocked()...)
+			if p.dl != nil {
+				dls = append(dls, p.dl)
+			}
 		}
 		r.mu.Unlock()
 		for _, pub := range pubs {
@@ -353,6 +364,9 @@ func (r *room) run() {
 		for _, dt := range dts {
 			dt.tick(now)
 			dt.reportIfDue(now)
+		}
+		for _, dl := range dls {
+			dl.tick(now)
 		}
 		if now.Sub(lastSpeakers) >= speakersEvery-tick/2 {
 			lastSpeakers = now

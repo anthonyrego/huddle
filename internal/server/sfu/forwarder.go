@@ -1,6 +1,7 @@
 package sfu
 
 import (
+	"slices"
 	"time"
 
 	"github.com/pion/rtp"
@@ -14,6 +15,11 @@ const (
 	// pendingMost caps the packets held from the new layer's keyframe while
 	// the old layer finishes its frame (about a second of 720p).
 	pendingMost = 1000
+	// pastMost is how many runs before the one being sent are kept for
+	// their late packets: a switch ends a run, and so does each probe's
+	// padding between frames, 30 a second; the newest 64 cover what a
+	// retransmission from the publisher can be late by.
+	pastMost = 64
 )
 
 // emitFunc sends one packet to the viewer under sequence number seq; the
@@ -25,6 +31,10 @@ type emitFunc func(seq uint16, h *rtp.Header, payload []byte)
 // across layer switches. Timestamps pass through: a publication's layers
 // share one timestamp base (the client stamps every layer with the same
 // capture clock), so only sequence numbers need rewriting.
+//
+// The downlink's probe pads between frames (pad): its padding takes the
+// sequence numbers after the frame last sent, and the run carries on past
+// them, the run before kept for its late packets.
 //
 // A switch waits for the new layer's keyframe, then for the old layer to
 // finish the frame it's in, so the viewer never gets half a frame: the new
@@ -47,7 +57,7 @@ type forwarder struct {
 	open    bool   // the newest packet sent didn't end its frame
 	lastAt  time.Time
 	cur     segment
-	prev    segment // the run before the last switch, for its late packets
+	past    []segment // the runs before cur (a switch, padding), newest last, for their late packets
 
 	pending []held // the target's packets from its keyframe on
 
@@ -73,7 +83,7 @@ type held struct {
 
 // newForwarder starts a forwarder whose first packet goes out as start+1.
 func newForwarder(start uint16) *forwarder {
-	return &forwarder{target: -1, current: -1, lastOut: start, prev: segment{layer: -1}, cur: segment{layer: -1}}
+	return &forwarder{target: -1, current: -1, lastOut: start, cur: segment{layer: -1}}
 }
 
 func seqNewer(a, b uint16) bool { return int16(a-b) > 0 }
@@ -100,6 +110,9 @@ func (f *forwarder) setTarget(layer int) (askKey bool) {
 // much of the new layer piled up waiting for the old to finish its frame.
 func (f *forwarder) push(layer int, h *rtp.Header, payload []byte, now time.Time, emit emitFunc) (askKey bool) {
 	switch {
+	case layer == f.current && f.current >= 0 && seqNewer(f.cur.lo, h.SequenceNumber):
+		// From before this run began: a late packet of an earlier one.
+		f.late(layer, h, payload, emit)
 	case layer == f.current && f.current >= 0:
 		f.send(layer, h, payload, now, emit)
 		if f.target < 0 && !f.open {
@@ -120,11 +133,47 @@ func (f *forwarder) push(layer int, h *rtp.Header, payload []byte, now time.Time
 		if f.current < 0 || !f.open || now.Sub(f.lastAt) > silentFor {
 			f.cutOver(emit, now)
 		}
-	case f.prev.has(layer, h.SequenceNumber):
-		// A late packet (a retransmission) of the run before the switch.
-		emit(h.SequenceNumber+f.prev.offset, h, payload)
+	default:
+		f.late(layer, h, payload, emit)
 	}
 	return false
+}
+
+// late sends a late packet (a retransmission) of a run before the one
+// being sent, in the place that run left for it.
+func (f *forwarder) late(layer int, h *rtp.Header, payload []byte, emit emitFunc) {
+	for i := len(f.past) - 1; i >= 0; i-- {
+		if f.past[i].has(layer, h.SequenceNumber) {
+			emit(h.SequenceNumber+f.past[i].offset, h, payload)
+			return
+		}
+	}
+}
+
+// keep ends the run being sent: its late packets still find their place.
+func (f *forwarder) keep() {
+	if f.cur.layer < 0 || f.cur.hi == f.cur.lo-1 {
+		return // nothing was sent in it
+	}
+	if len(f.past) == pastMost {
+		f.past = append(f.past[:0], f.past[1:]...)
+	}
+	f.past = append(f.past, f.cur)
+}
+
+// pad takes n sequence numbers for padding after the frame last sent, and
+// returns the first and the frame's timestamp, for the padding to carry:
+// the run being sent carries on past them. Only between frames (the last
+// packet sent ended one), and not while switching.
+func (f *forwarder) pad(n int) (first uint16, ts uint32, ok bool) {
+	if n <= 0 || f.current < 0 || f.open || f.target != f.current {
+		return 0, 0, false
+	}
+	f.keep()
+	first = f.lastOut + 1
+	f.cur = segment{layer: f.current, lo: f.cur.hi + 1, hi: f.cur.hi, offset: f.cur.offset + uint16(n)}
+	f.lastOut += uint16(n)
+	return first, f.lastTs, true
 }
 
 // send forwards a packet of the current layer.
@@ -147,7 +196,7 @@ func (f *forwarder) cutOver(emit emitFunc, now time.Time) {
 		if tsNewer(f.lastTs, key.Timestamp) {
 			f.backs++
 		}
-		f.prev = f.cur
+		f.keep()
 	}
 	f.current = f.target
 	f.cur = segment{layer: f.current, lo: key.SequenceNumber, hi: key.SequenceNumber - 1, offset: f.lastOut + 1 - key.SequenceNumber}
@@ -164,9 +213,7 @@ func (f *forwarder) cutOver(emit emitFunc, now time.Time) {
 // being sent, the target's next keyframe is waited for (askKey) and cut
 // over to at once.
 func (f *forwarder) restart(layer int) (askKey bool) {
-	if f.prev.layer == layer {
-		f.prev = segment{layer: -1}
-	}
+	f.past = slices.DeleteFunc(f.past, func(s segment) bool { return s.layer == layer })
 	if f.target == layer {
 		f.pending = nil
 	}

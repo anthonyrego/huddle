@@ -63,6 +63,7 @@ type camera struct {
 	wrote  [3]int // frames written
 	keys   [3]int
 	frame  int // the next frame's number
+	filler int // bytes of SEI filler after each frame of h, as a publisher's probe adds
 }
 
 // publishCamera publishes c's camera and starts it.
@@ -116,8 +117,13 @@ func (cam *camera) run() {
 				continue
 			}
 			key := cam.wrote[i] == 0 || (n+20*i)%keyPeriod == 0 || cam.ask[i]
+			fill := cam.filler
 			cam.mu.Unlock()
-			if tr.WriteFrame(camFrame(i, n, key), ts, nil) != nil {
+			au := camFrame(i, n, key)
+			if i == 1 && fill > 0 {
+				au = appendSEIFiller(au, fill)
+			}
+			if tr.WriteFrame(au, ts, nil) != nil {
 				continue // not negotiated yet
 			}
 			cam.mu.Lock()
@@ -182,6 +188,26 @@ func camFrame(i, n int, key bool) []byte {
 
 func sliceFill(i, n int) byte { return 0x10 + byte((i*31+n)%200) }
 
+// appendSEIFiller appends an SEI NAL unit of one filler payload of about
+// n bytes, as the room's probe writes it (internal/rtc/room's video.go).
+func appendSEIFiller(dst []byte, n int) []byte {
+	if n%255 == 0 {
+		n--
+	}
+	dst = append(dst, 0, 0, 0, 1, nalSEI, seiFiller)
+	for s := n; ; s -= 255 {
+		if s < 255 {
+			dst = append(dst, byte(s))
+			break
+		}
+		dst = append(dst, 0xff)
+	}
+	for range n {
+		dst = append(dst, 0xff)
+	}
+	return append(dst, 0x80)
+}
+
 // readSlice reads a slice NAL unit written by camFrame (header byte
 // included): its layer and frame, if it's whole.
 func readSlice(nal []byte) (layer, frame int, ok bool) {
@@ -227,7 +253,9 @@ func (u unit) String() string {
 }
 
 // units puts pkts (in order) back together; a run cut off before its
-// marker at the end is left out.
+// marker at the end is left out. Padding (no payload: a probe's, or a
+// filler's stand-in, which may carry the marker) is part of the run and
+// adds nothing to the unit.
 func units(pkts []vidPkt) []unit {
 	var out []unit
 	start := 0
@@ -241,6 +269,9 @@ func units(pkts []vidPkt) []unit {
 		dep := &codecs.H264Packet{}
 		var au []byte
 		for _, q := range run {
+			if len(q.payload) == 0 {
+				continue
+			}
 			b, err := dep.Unmarshal(q.payload)
 			if err != nil {
 				u.whole = false

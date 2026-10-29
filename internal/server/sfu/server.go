@@ -7,10 +7,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/pion/interceptor"
+	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/anthonyrego/huddle/internal/server/rtctoken"
@@ -48,7 +51,8 @@ type Server struct {
 	net      *network
 	upAPI    *webrtc.API
 	downAPI  *webrtc.API
-	now      func() time.Time // the clock tokens are checked against (tests move it)
+	downCC   *cc.InterceptorFactory // every down connection's congestion control
+	now      func() time.Time       // the clock tokens are checked against (tests move it)
 	closedCh chan struct{}
 	// answerWait is how long a down offer waits for its answer (tests
 	// shorten it).
@@ -57,6 +61,9 @@ type Server struct {
 	mu     sync.Mutex
 	rooms  map[string]*room
 	closed bool
+
+	estMu sync.Mutex
+	ests  map[string]*downEstimator // each down connection's, by its id, until it takes it
 }
 
 // New opens the media port and makes the server.
@@ -72,20 +79,29 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sfu: %w", err)
 	}
-	upAPI, err := newAPI(n, up)
-	if err != nil {
+	s := &Server{cfg: cfg, log: log, net: n, now: time.Now, closedCh: make(chan struct{}), answerWait: answerWait,
+		rooms: map[string]*room{}, ests: map[string]*downEstimator{}}
+	if s.downCC, err = newDownCC(s); err != nil {
 		n.close()
 		return nil, fmt.Errorf("sfu: %w", err)
 	}
-	downAPI, err := newAPI(n, down)
-	if err != nil {
+	if s.upAPI, err = newAPI(n, up); err != nil {
 		n.close()
 		return nil, fmt.Errorf("sfu: %w", err)
 	}
-	s := &Server{cfg: cfg, log: log, net: n, upAPI: upAPI, downAPI: downAPI, now: time.Now,
-		closedCh: make(chan struct{}), answerWait: answerWait, rooms: map[string]*room{}}
+	if s.downAPI, err = s.newDownAPI(); err != nil {
+		n.close()
+		return nil, fmt.Errorf("sfu: %w", err)
+	}
 	log.Info("sfu: media", "addrs", fmt.Sprint(n.addrs()), "ip", cfg.Network.IP, "external", cfg.Network.External)
 	return s, nil
+}
+
+// newDownAPI makes the down connections' API: extra interceptors nearest
+// the network (a narrow link in tests), then the congestion control whose
+// estimate each subscriber's downlink allocation follows.
+func (s *Server) newDownAPI(extra ...interceptor.Factory) (*webrtc.API, error) {
+	return newAPI(s.net, down, append(slices.Clone(extra), s.downCC)...)
 }
 
 // Addrs are the addresses the media port listens on.

@@ -216,8 +216,50 @@ replaces lksdk behind `rtc.Connector`. LiveKit stays beside it
       250 ms from when the assembler reached it, not from when it
       appeared, so the waits queued. LiveKit made it worse: a PLI stops
       its retransmissions until the next keyframe.
-- **Step 4:** Dynacast (unwatched layers stop), then the downlink's own
-  allocation (deferrable on the LAN).
+- **Step 4, Dynacast and the downlink (done 2026-10-29):**
+  - Two worktrees, merged:
+    - Dynacast: the SFU tells each publisher which layers anyone is sent,
+      at once when that grows and 3 s after a layer leaves it, every layer
+      kept for the first 10 s; the publisher stops encoding the rest, and
+      brings one back at its floor at once when it's wanted again.
+    - The downlink: pion's GCC on every down connection; a viewer is sent
+      what its settings want until a queue stands in front of its link,
+      then each video gets the largest layer that fits, a screen first,
+      down at once and up only through a probe of padding between frames.
+  - **Gate, measured:** against LiveKit, run for run:
+    - a layer nobody watches costs nothing: encoder services at
+      0.0–0.1% with no viewer (LiveKit 1.7–2.0% throughout)
+    - 720p paused by Dynacast is shown 56–74 ms after asking (LiveKit,
+      never paused, up to 1.17 s)
+    - a first frame on a camera with every layer paused in 77–121 ms
+    - behind a 1 Mbps downlink, no freeze and nothing lost (LiveKit's
+      link dropped 4,400–5,100 packets and the voice scored 0.41–0.44),
+      and a screen keeps its layer while the camera beside it drops
+    - huddled at 9.1–9.4% of a core and 84 MB with five cameras, a share
+      and three viewers (LiveKit 10.1%, 119 MB)
+    - missed: the voice behind 1 Mbps scored 0.80–0.87 against 0.88. No
+      packet was lost; the jitter buffer steps up for the first queue and
+      back down, a second of the score each. Clean 720p latency is 24–25 ms
+      against LiveKit's 21–22.
+  - **Found:**
+    - VideoToolbox's rate control counts a gap in the timestamps as bits
+      not spent: a 720p layer resumed at its floor sent 1.7–1.9 Mbps for
+      4 s. A paused encoder now has the gap taken out.
+    - LiveKit's allocator goes by REMB, which pion never sends, so
+      through LiveKit no viewer's downlink is followed at all.
+    - pion's GCC sees a queue only while it grows, and took a lossy
+      network's jitter for overuse. A downlink is limited by a queue
+      standing, measured from the feedback's one-way delays, with GCC's
+      estimate under what's sent.
+    - pion's NACK responder answers every NACK, and the viewer asks every
+      20 ms: behind 1 Mbps a viewer was sent 13 Mbps of resends. Resends
+      are gated while the link is saturated.
+    - pion's GCC counts padding in the header as the header alone, so the
+      SFU writes its padding in the payload.
+    - Where the two met: a narrow viewer's smaller layer, paused by
+      Dynacast, was never chosen; it's now chosen and wanted. And in the
+      publisher, the pacer's rate fell with the paused layers, and a
+      smaller layer wanted again could pause a running larger one.
 - **Step 5:**
   - builtin becomes the default, and the user's two-Mac gates run on it.
   - Then LiveKit, lksdk, the protocol module and `lktoken` go.

@@ -18,6 +18,7 @@ import (
 
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
+	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
 
 	rtccodecs "github.com/anthonyrego/huddle/internal/rtc/codecs"
@@ -682,5 +683,89 @@ func TestVideoRetransmissions(t *testing.T) {
 	t.Logf("%s %v: %d packets, %d dropped on the way in, %d missing after resends", path, n, len(ordered), dropped, missing)
 	if dropped < 20 || missing != 0 || len(n) != 3 {
 		t.Errorf("%d dropped, %d missing, layers %v", dropped, missing, n)
+	}
+}
+
+// dropIn drops the first arrival of every tenth video packet a connection
+// receives (by sequence number), after SRTP has read it, as a network
+// simulation on the receive side does; a resend of it gets through.
+type dropIn struct {
+	interceptor.NoOp
+	mu      sync.Mutex
+	seen    map[uint16]bool
+	dropped int
+}
+
+func (d *dropIn) NewInterceptor(string) (interceptor.Interceptor, error) { return d, nil }
+
+func (d *dropIn) BindRemoteStream(info *interceptor.StreamInfo, r interceptor.RTPReader) interceptor.RTPReader {
+	if !strings.HasPrefix(info.MimeType, "video/") {
+		return r
+	}
+	return interceptor.RTPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
+		for {
+			n, attr, err := r.Read(b, a)
+			if err != nil {
+				return n, attr, err
+			}
+			var h rtp.Header
+			if _, err := h.Unmarshal(b[:n]); err != nil {
+				return n, attr, nil
+			}
+			d.mu.Lock()
+			drop := !d.seen[h.SequenceNumber] && h.SequenceNumber%10 == 3
+			d.seen[h.SequenceNumber] = true
+			if drop {
+				d.dropped++
+			}
+			d.mu.Unlock()
+			if !drop {
+				return n, attr, nil
+			}
+		}
+	})
+}
+
+// A loss simulated on the viewer's side, after SRTP, is repaired when the
+// viewer's session turns replay protection off (the SFU resends on the
+// stream itself, which SRTP would otherwise take for a replay), and isn't
+// when it doesn't.
+func TestVideoSimulatedLoss(t *testing.T) {
+	for _, unprotected := range []bool{true, false} {
+		t.Run(fmt.Sprintf("NoReplayProtection=%v", unprotected), func(t *testing.T) {
+			ts := newTestSFU(t, nil)
+			a := ts.join(t, "r", "a", sfuclient.Options{})
+			drop := &dropIn{seen: map[uint16]bool{}}
+			b := ts.join(t, "r", "b", sfuclient.Options{Subscribe: []interceptor.Factory{drop}, NoReplayProtection: unprotected})
+			publishCamera(t, a)
+			waitFor(t, wait, "b to be offered a's camera", func() bool { return b.from("a", signal.Video) != nil })
+			b.settings(t, "a", 640, 360, true)
+			waitUnits(t, b, "a", "h", 45)
+			b.settings(t, "a", 0, 0, false)
+			time.Sleep(300 * time.Millisecond)
+			pkts := b.videoFrom("a")
+			seqs := map[uint16]bool{}
+			lo, hi := pkts[0].seq, pkts[0].seq
+			for _, p := range pkts {
+				seqs[p.seq] = true
+				if seqNewer(p.seq, hi) {
+					hi = p.seq
+				}
+				if seqNewer(lo, p.seq) {
+					lo = p.seq
+				}
+			}
+			missing := int(hi-lo) + 1 - len(seqs)
+			drop.mu.Lock()
+			dropped := drop.dropped
+			drop.mu.Unlock()
+			t.Logf("%d packets, %d dropped after SRTP, %d missing after resends", len(seqs), dropped, missing)
+			if dropped < 5 {
+				t.Fatalf("%d dropped", dropped)
+			}
+			if unprotected && missing != 0 || !unprotected && missing < dropped-1 {
+				t.Errorf("%d missing of %d dropped", missing, dropped)
+			}
+		})
 	}
 }

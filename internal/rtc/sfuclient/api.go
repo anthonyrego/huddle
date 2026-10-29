@@ -51,6 +51,15 @@ type Options struct {
 	// Join returns.
 	Publish   []interceptor.Factory
 	Subscribe []interceptor.Factory
+	// NoReplayProtection turns SRTP's replay protection off on the
+	// receive connection, for a network simulation in Subscribe. Such a
+	// simulation drops packets after SRTP has read them, and the SFU
+	// resends a packet on its own stream under its own sequence number
+	// (no RTX), so SRTP would take every resend of a dropped packet for a
+	// replay and throw it away: no loss it simulates could be repaired.
+	// A packet lost on a real network never reaches SRTP, so this is for
+	// simulations only.
+	NoReplayProtection bool
 	// Loopback offers 127.0.0.1 as a candidate (tests).
 	Loopback bool
 	// SendOnly subscribes to nothing (bots that only publish); the server
@@ -127,6 +136,7 @@ func NewAPI(o Options, publish bool) (*webrtc.API, error) {
 		// A remote track exists as soon as the SDP names it, so a track
 		// that hasn't sent yet is still announced (and nothing pads it).
 		s.SetFireOnTrackBeforeFirstRTP(true)
+		s.DisableSRTPReplayProtection(o.NoReplayProtection)
 	}
 	return webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(ir), webrtc.WithSettingEngine(s)), nil
 }

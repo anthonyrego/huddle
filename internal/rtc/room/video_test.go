@@ -3,6 +3,7 @@ package room
 import (
 	"bytes"
 	"math/rand/v2"
+	"slices"
 	"testing"
 	"time"
 
@@ -383,6 +384,110 @@ func TestSRClock(t *testing.T) {
 	if want := 3600*time.Second + 512*time.Second/48000; at != want {
 		t.Fatalf("across the wrap: %v, want %v", at, want)
 	}
+}
+
+// TestSyncClocks: a camera and a voice from one sender, through a network
+// that adds 0–40 ms. Frames are timed against the voice by arrivals, the
+// jitter and the encoder's slower frames gone; before any packet of one,
+// by sender reports, which (as pion stamps them) place a frame as late as
+// the encoder was with the frame before.
+func TestSyncClocks(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 4))
+	t0 := time.Unix(5000, 0)
+	const ntpOffset = 70 * 365 * 24 * time.Hour // the sender's clock: since 1900, near enough
+	baseV, baseA := uint32(0xffff0000), uint32(0x7fffff00)
+	type arrival struct {
+		at    time.Time
+		video bool
+		ts    uint32
+	}
+	var arr []arrival
+	const net = 2 * time.Millisecond
+	jit := func(d time.Duration) time.Duration { return time.Duration(rng.Int64N(int64(d))) }
+	encoded := map[int]time.Duration{} // each frame's encoding: 5–13 ms
+	for n := range 90 {                // 3 s of 30 fps, four packets a frame
+		c := t0.Add(time.Duration(n) * time.Second / 30)
+		encoded[n] = 5*time.Millisecond + jit(8*time.Millisecond)
+		for k := range 4 {
+			arr = append(arr, arrival{c.Add(encoded[n] + net + time.Duration(k)*time.Millisecond + jit(40*time.Millisecond)), true, baseV + uint32(n*3000)})
+		}
+	}
+	for k := range 150 { // 3 s of 20 ms packets, each sent once captured
+		sent := t0.Add(time.Duration(k+1)*20*time.Millisecond + 500*time.Microsecond)
+		arr = append(arr, arrival{sent.Add(net + jit(40*time.Millisecond)), false, baseA + uint32(k*960)})
+	}
+	slices.SortFunc(arr, func(x, y arrival) int { return x.at.Compare(y.at) })
+	vts := baseV + 60*3000                 // the frame taken 2 s in
+	ats := baseA + uint32(48000*1950/1000) // the voice's sample taken 50 ms before it
+	// 50 ms apart, the frame placed late by its encoding, the voice by its
+	// packet and its encoding, less the packet voiceSent takes off.
+	want := func(encode time.Duration) time.Duration {
+		return 50*time.Millisecond + encode - 20*time.Millisecond - 500*time.Microsecond + voiceSent
+	}
+	// Sender reports as pion's sender interceptor makes them: the last
+	// packet's timestamp at the time it was written.
+	ntp := func(at time.Time) uint64 {
+		d := at.Sub(time.Unix(0, 0)) + ntpOffset
+		return uint64(d/time.Second)<<32 | uint64(d%time.Second)<<32/uint64(time.Second)
+	}
+	vsr := &rtcp.SenderReport{NTPTime: ntp(t0.Add(59*time.Second/30 + encoded[59])), RTPTime: baseV + 59*3000}
+	asr := &rtcp.SenderReport{NTPTime: ntp(t0.Add(100*20*time.Millisecond + 500*time.Microsecond)), RTPTime: baseA + 99*960}
+
+	var v, a srClock
+	if _, _, ok := syncGap(&v, &a, vts, ats); ok {
+		t.Fatal("a gap with nothing come yet")
+	}
+	v.read(vsr)
+	a.read(asr)
+	gap, si, ok := syncGap(&v, &a, vts, ats)
+	if !ok || si.How != "reports" || durAbs(gap-want(encoded[59])) > 100*time.Microsecond {
+		t.Fatalf("by reports alone: %v by %q (ok %v), want %v", gap, si.How, ok, want(encoded[59]))
+	}
+	v, a = srClock{}, srClock{}
+	for _, x := range arr {
+		if x.video {
+			v.arrived(x.ts, x.at, 90000)
+		} else {
+			a.arrived(x.ts, x.at, 48000)
+		}
+	}
+	// By arrivals, each track's least delay: the voice's after its
+	// packet, the video's after its quickest encoding, with what's left of
+	// the jitter (a few ms).
+	least := func(video bool) time.Duration {
+		d := time.Hour
+		for _, x := range arr {
+			switch {
+			case x.video && video:
+				d = min(d, x.at.Sub(t0)-time.Duration(int32(x.ts-baseV))*time.Second/90000)
+			case !x.video && !video:
+				d = min(d, x.at.Sub(t0)-time.Duration(int32(x.ts-baseA))*time.Second/48000)
+			}
+		}
+		return d
+	}
+	byArrivals := 50*time.Millisecond + least(true) - least(false) + voiceSent
+	gap, si, ok = syncGap(&v, &a, vts, ats)
+	if !ok || si.How != "arrivals" || durAbs(gap-byArrivals) > 100*time.Microsecond || durAbs(gap-want(5*time.Millisecond)) > 3*time.Millisecond {
+		t.Fatalf("by arrivals: %v by %q (ok %v), want %v (%v with no jitter)", gap, si.How, ok, byArrivals, want(5*time.Millisecond))
+	}
+	v.read(vsr)
+	a.read(asr)
+	if gap2, si, _ := syncGap(&v, &a, vts, ats); si.How != "arrivals" || gap2 != gap || durAbs(si.Reports-want(encoded[59])) > 100*time.Microsecond {
+		t.Fatalf("with reports too: %v by %q, reports %v", gap2, si.How, si.Reports)
+	}
+	// LiveKit's made-up silence doesn't count as the voice's arrival.
+	silence := append([]byte{0xf8, 0xff, 0xfe}, make([]byte, 77)...)
+	if !madeUpSilence(silence) || madeUpSilence([]byte{0xf8, 0xff, 0xfe}) || madeUpSilence(append([]byte{0xf8, 0xff, 0xfe, 1}, make([]byte, 76)...)) {
+		t.Fatal("LiveKit's silent frame read wrong")
+	}
+}
+
+func durAbs(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
 }
 
 // TestFiller: a probe's filler is one SEI NAL unit that survives

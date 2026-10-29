@@ -3,6 +3,7 @@ package icept
 import (
 	"io"
 	"sync"
+	"time"
 
 	"github.com/pion/interceptor"
 
@@ -18,6 +19,21 @@ type Sim struct {
 	// New is called once per remote stream; a nil or inactive Sim leaves
 	// that stream alone.
 	New func() *netsim.Sim
+}
+
+// arrivedKey is the attribute under which Sim hands on when each packet
+// came off the network.
+type arrivedKey struct{}
+
+// Arrived is when a packet read through a Sim came off the network, before
+// the simulated delay: a tracing aid (huddle video -trace). It reads the
+// attributes a track's ReadRTP returns; false without a Sim.
+func Arrived(a interceptor.Attributes) (time.Time, bool) {
+	if a == nil {
+		return time.Time{}, false
+	}
+	t, ok := a.Get(arrivedKey{}).(time.Time)
+	return t, ok
 }
 
 func (f Sim) NewInterceptor(string) (interceptor.Interceptor, error) {
@@ -86,6 +102,7 @@ func (s *simStream) pump() {
 		if attr == nil {
 			attr = interceptor.Attributes{}
 		}
+		attr.Set(arrivedKey{}, time.Now())
 		s.pipe.Send(packet{b: append([]byte(nil), buf[:n]...), attr: attr})
 	}
 }

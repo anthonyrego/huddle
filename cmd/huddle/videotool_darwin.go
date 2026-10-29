@@ -337,6 +337,9 @@ loop:
 	}
 	if recv != nil {
 		run.report(recv, *out, swW, run.switchedAt)
+		if *trace {
+			writePLIs(filepath.Join(*out, "plis.csv"), recv)
+		}
 	}
 	if recv != nil && spk != nil && mic != nil {
 		heard := spk.Samples()
@@ -473,6 +476,23 @@ func (t *videoTrace) unit(v rtc.VideoTrack, u rtcroom.VideoUnitInfo) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	fmt.Fprintf(t.units, "%s,%s,%d,%v,%v,%v,%d,%d,%d\n", v.Identity(), v.Kind(), u.RTP, u.Key, u.Gap, u.Skipped, nanos(u.Last), nanos(u.At), nanos(u.Lost))
+}
+
+// writePLIs writes when each received video asked for a keyframe (-trace).
+func writePLIs(path string, room rtc.Room) {
+	f, err := os.Create(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+	defer w.Flush()
+	fmt.Fprintln(w, "identity,kind,at_ns")
+	for _, s := range rtcroom.VideoTracks(room) {
+		for _, at := range s.PLIAt {
+			fmt.Fprintf(w, "%s,%s,%d\n", s.Identity, s.Kind, at.UnixNano())
+		}
+	}
 }
 
 func (t *videoTrace) close() {

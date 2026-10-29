@@ -20,7 +20,16 @@ import (
 )
 
 // pliEvery is the least time between two keyframe requests for one track.
-const pliEvery = 500 * time.Millisecond
+// While it waits for a keyframe and none is on its way (the assembler
+// holds no packet of one), a track asks again every pliEvery. An SFU may
+// drop an ask (LiveKit forwards one a second for a top layer), so asking
+// again sooner comes sooner after its limit; but LiveKit stops resending
+// once asked, until it forwards a keyframe's first packet, so an ask while
+// a keyframe is on its way, unseen, costs it its mending. 300 ms is past
+// the longest a keyframe took to start coming after an ask LiveKit
+// forwarded (50–250 ms at 20% loss with 40 ms jitter); at 500 ms the
+// freezes there ran to 1.3 s.
+const pliEvery = 300 * time.Millisecond
 
 // Lip sync bounds.
 const (
@@ -81,10 +90,11 @@ type VideoTrackStats struct {
 	W, H       int // the last frame's size
 	Frames     int // decoded and shown
 	Keyframes  int
-	Units      int // access units put together
-	Skipped    int // units dropped while waiting for a keyframe
-	Gaps       int // losses that made it wait for one
-	PLIs       int // keyframes asked for
+	Units      int         // access units put together
+	Skipped    int         // units dropped while waiting for a keyframe
+	Gaps       int         // losses that made it wait for one
+	PLIs       int         // keyframes asked for
+	PLIAt      []time.Time // when (for tools)
 	DecodeErrs int
 	LostPkts   int // packets given up for good
 	Cut        int // units cut off by the next (a layer switch), dropped
@@ -186,6 +196,7 @@ func (r *room) subscribedVideo(rt remoteTrack) func(rtcp.Packet) {
 	r.videos[rt.sid] = t
 	r.mu.Unlock()
 	slog.Info("video: receiving", "identity", t.who, "kind", kind, "track", rt.sid)
+	t.wantKey.Store(true) // from a keyframe: the assembler drops what comes before one
 	go t.read()
 	go t.play()
 	if r.ev.VideoAdded != nil {
@@ -251,8 +262,7 @@ func (t *videoTrack) read() {
 			if unitHook != nil {
 				unitHook(t, VideoUnitInfo{RTP: u.ts, Key: u.key, Gap: u.gap, Skipped: skip, Lost: u.lost, Last: u.last, At: u.at})
 			}
-			if skip {
-				t.askKey()
+			if skip { // the assembler asks for the keyframe (below)
 				continue
 			}
 			select {
@@ -284,13 +294,15 @@ func (t *videoTrack) read() {
 
 // askKey asks the sender for a keyframe, once per pliEvery.
 func (t *videoTrack) askKey() {
+	now := time.Now()
 	t.mu.Lock()
-	if time.Since(t.lastPLI) < pliEvery {
+	if now.Sub(t.lastPLI) < pliEvery {
 		t.mu.Unlock()
 		return
 	}
-	t.lastPLI = time.Now()
+	t.lastPLI = now
 	t.st.PLIs++
+	t.st.PLIAt = append(t.st.PLIAt, t.lastPLI)
 	t.mu.Unlock()
 	t.ctl.pli()
 }
@@ -402,6 +414,7 @@ func (t *videoTrack) Stats() VideoTrackStats {
 	defer t.mu.Unlock()
 	s := t.st
 	s.Recoveries = append([]time.Duration(nil), t.st.Recoveries...)
+	s.PLIAt = append([]time.Time(nil), t.st.PLIAt...)
 	if t.holdN > 0 {
 		s.Held = t.holdSum / time.Duration(t.holdN)
 	}

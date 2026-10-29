@@ -151,30 +151,20 @@ type DevJoin struct {
 // BotSuffix ends the identity a dev join gives a bot.
 const BotSuffix = "-bot"
 
-// Joined answers a join with what the app needs to connect: which media
-// server the meeting's media goes through, its URL and a token for it, and
-// the URL of the meeting's WebSocket.
+// Joined answers a join with what the app needs to connect: the media
+// server's URL and a token for it, and the URL of the meeting's WebSocket.
 type Joined struct {
 	Room     string `json:"room"`
 	Identity string `json:"identity"`
-	// Media is MediaLiveKit or MediaBuiltin; empty from a server older
-	// than the field, which means LiveKit.
+	// Media names the media server's kind, always MediaBuiltin (servers
+	// from before huddled had its own sent another, or none), so an app
+	// can refuse one it doesn't speak.
 	Media    string `json:"media,omitempty"`
 	MediaURL string `json:"media_url,omitempty"`
-	// LiveKitURL is MediaURL when Media is LiveKit (servers before Media
-	// set only this); it goes when LiveKit does.
-	LiveKitURL string `json:"livekit_url,omitempty"`
-	Token      string `json:"token"`
-	WSURL      string `json:"ws_url"`
+	Token    string `json:"token"`
+	WSURL    string `json:"ws_url"`
 }
 
-// Media servers a meeting's media can go through (Joined.Media,
-// rtc.Join.Kind).
-const (
-	// MediaLiveKit: a LiveKit server; MediaURL is its WebSocket, the token
-	// LiveKit's.
-	MediaLiveKit = "livekit"
-	// MediaBuiltin: huddled's own SFU; MediaURL is its /rtc WebSocket, the
-	// token an rtctoken.
-	MediaBuiltin = "builtin"
-)
+// MediaBuiltin is huddled's own SFU (Joined.Media): MediaURL is its /rtc
+// WebSocket, the token an rtctoken.
+const MediaBuiltin = "builtin"

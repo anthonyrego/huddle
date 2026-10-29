@@ -18,11 +18,15 @@ func TestJoin(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req wire.DevJoin
 		json.NewDecoder(r.Body).Decode(&req)
+		if req.Name == "Old" {
+			json.NewEncoder(w).Encode(wire.Joined{Room: "standup", Identity: "old-1", Token: "t", Media: "livekit"})
+			return
+		}
 		if r.URL.Path != "/dev/join" || req.Room != "standup" || req.Name != "Echo" || !req.Bot {
 			http.Error(w, `{"message":"wrong join"}`, http.StatusBadRequest)
 			return
 		}
-		json.NewEncoder(w).Encode(wire.Joined{Room: "standup", Identity: "echo-1a2b-bot", Token: "t"})
+		json.NewEncoder(w).Encode(wire.Joined{Room: "standup", Identity: "echo-1a2b-bot", Media: wire.MediaBuiltin, Token: "t"})
 	}))
 	defer srv.Close()
 	j, err := Join(context.Background(), srv.URL+"/", wire.DevJoin{Room: "standup", Name: "Echo", Bot: true})
@@ -32,6 +36,11 @@ func TestJoin(t *testing.T) {
 	_, err = Join(context.Background(), srv.URL, wire.DevJoin{Room: "elsewhere", Name: "Echo"})
 	if err == nil || err.Error() != "join: 400 Bad Request: wrong join" {
 		t.Fatalf("a refusal read as %v", err)
+	}
+	// A server from before huddled had its own media server.
+	_, err = Join(context.Background(), srv.URL, wire.DevJoin{Room: "standup", Name: "Old", Bot: true})
+	if err == nil || err.Error() != `join: the server's media server is "livekit", not huddled's own: update the server` {
+		t.Fatalf("an old server read as %v", err)
 	}
 }
 
@@ -50,20 +59,8 @@ func TestJoinUnreachable(t *testing.T) {
 }
 
 func TestRTC(t *testing.T) {
-	for _, c := range []struct {
-		j    wire.Joined
-		want rtc.Join
-	}{
-		// A server from before Media: LiveKit at LiveKitURL.
-		{wire.Joined{Identity: "ann-1", Token: "t", LiveKitURL: "ws://lk:7880"},
-			rtc.Join{Kind: wire.MediaLiveKit, URL: "ws://lk:7880", Token: "t", Identity: "ann-1"}},
-		{wire.Joined{Identity: "ann-1", Token: "t", Media: wire.MediaLiveKit, MediaURL: "ws://lk:7880", LiveKitURL: "ws://lk:7880"},
-			rtc.Join{Kind: wire.MediaLiveKit, URL: "ws://lk:7880", Token: "t", Identity: "ann-1"}},
-		{wire.Joined{Identity: "ann-1", Token: "t", Media: wire.MediaBuiltin, MediaURL: "ws://h:8080/rtc"},
-			rtc.Join{Kind: wire.MediaBuiltin, URL: "ws://h:8080/rtc", Token: "t", Identity: "ann-1"}},
-	} {
-		if got := RTC(c.j); got != c.want {
-			t.Errorf("RTC(%+v) = %+v, want %+v", c.j, got, c.want)
-		}
+	j := wire.Joined{Room: "r", Identity: "ann-1", Media: wire.MediaBuiltin, MediaURL: "ws://h:8080/rtc", Token: "t", WSURL: "ws://h:8080/ws"}
+	if got, want := RTC(j), (rtc.Join{URL: "ws://h:8080/rtc", Token: "t", Identity: "ann-1"}); got != want {
+		t.Errorf("RTC(%+v) = %+v, want %+v", j, got, want)
 	}
 }

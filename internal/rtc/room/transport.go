@@ -1,23 +1,19 @@
 package room
 
-// The transport is the media server under a room: LiveKit through its Go
-// SDK (lk.go), or huddle's own SFU through sfuclient (sfu.go). It carries everything the room says to the server or hears
-// from it: who's there, the tracks it's sent and what it asks of them, what
+// The transport is the media server under a room: huddle's own SFU through
+// sfuclient (sfu.go). It carries everything the room says to the server or
+// hears from it: who's there, the tracks it's sent and what it asks of them, what
 // it publishes, and the congestion control on the connection it publishes
 // on. Opus, jitter buffers, the mix, the allocator, the assembler, decoding
 // and lip sync are the room's, whichever transport it's on.
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/anthonyrego/huddle/internal/rtc"
 	"github.com/anthonyrego/huddle/internal/rtc/icept"
-	"github.com/anthonyrego/huddle/internal/wire"
 )
 
 // transport is one joined session with a media server.
@@ -40,10 +36,6 @@ type transport interface {
 	// leave hangs up.
 	leave()
 }
-
-// dialFunc joins the room j is for. ev hears what happens from the moment
-// it's called, on the transport's goroutines, until leave.
-type dialFunc func(ctx context.Context, j rtc.Join, cfg dialConfig, ev transportEvents) (transport, error)
 
 // dialConfig is what the room asks of a transport's connections.
 type dialConfig struct {
@@ -135,20 +127,8 @@ type videoOut interface {
 }
 
 // wantedOut is a videoOut whose server says which of its layers anyone is
-// sent (Dynacast: huddle's SFU; lksdk doesn't pass LiveKit's on, so there
-// every layer stays wanted). f hears each change, a bool per layer, largest
-// first, and the last one heard before it was set.
+// sent (Dynacast). f hears each change, a bool per layer, largest first,
+// and the last one heard before it was set.
 type wantedOut interface {
 	onWanted(f func(wanted []bool))
-}
-
-// dialer is the transport for a join's media server.
-func dialer(kind string) (dialFunc, error) {
-	switch kind {
-	case "", wire.MediaLiveKit:
-		return dialLK, nil
-	case wire.MediaBuiltin:
-		return dialSFU, nil
-	}
-	return nil, fmt.Errorf("unknown media server %q", kind)
 }

@@ -19,7 +19,8 @@ import (
 
 // Join asks server (http://host:port) to let req.Name into req.Room. A
 // server that can't be reached gives http.Client's *url.Error; one that
-// refuses gives "join: <status>: <its message>".
+// refuses gives "join: <status>: <its message>"; one whose media server
+// isn't huddled's own (a server from before it had one) is refused here.
 func Join(ctx context.Context, server string, req wire.DevJoin) (wire.Joined, error) {
 	var j wire.Joined
 	body, _ := json.Marshal(req)
@@ -44,20 +45,14 @@ func Join(ctx context.Context, server string, req wire.DevJoin) (wire.Joined, er
 	if err := json.NewDecoder(res.Body).Decode(&j); err != nil {
 		return j, fmt.Errorf("join: %w", err)
 	}
+	if j.Media != wire.MediaBuiltin {
+		return j, fmt.Errorf("join: the server's media server is %q, not huddled's own: update the server", j.Media)
+	}
 	return j, nil
 }
 
-// RTC is the media side of a join's answer: which media server (an answer
-// without Media is from a server older than the field, which means
-// LiveKit), its URL (MediaURL, or LiveKitURL from such a server), the token
-// and the identity.
+// RTC is the media side of a join's answer: the media server's URL, the
+// token and the identity.
 func RTC(j wire.Joined) rtc.Join {
-	r := rtc.Join{Kind: j.Media, URL: j.MediaURL, Token: j.Token, Identity: j.Identity}
-	if r.Kind == "" {
-		r.Kind = wire.MediaLiveKit
-	}
-	if r.URL == "" && r.Kind == wire.MediaLiveKit {
-		r.URL = j.LiveKitURL
-	}
-	return r
+	return rtc.Join{URL: j.MediaURL, Token: j.Token, Identity: j.Identity}
 }

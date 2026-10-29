@@ -1,7 +1,7 @@
 package room
 
 // The builtin transport against huddle's real SFU (internal/server/sfu),
-// in process, behind httptest on loopback: no LiveKit, no devices.
+// in process, behind httptest on loopback: no devices.
 
 import (
 	"context"
@@ -25,7 +25,6 @@ import (
 	"github.com/anthonyrego/huddle/internal/rtc/fileio"
 	"github.com/anthonyrego/huddle/internal/server/rtctoken"
 	"github.com/anthonyrego/huddle/internal/server/sfu"
-	"github.com/anthonyrego/huddle/internal/wire"
 )
 
 // sfuWait is how long a test waits for something that should happen at
@@ -62,7 +61,7 @@ func (ts *testSFU) join(t *testing.T, room, identity string, agent bool) rtc.Joi
 	if err != nil {
 		t.Fatal(err)
 	}
-	return rtc.Join{Kind: wire.MediaBuiltin, URL: ts.url, Token: tok, Identity: identity}
+	return rtc.Join{URL: ts.url, Token: tok, Identity: identity}
 }
 
 // testLog sends a logger's lines to t.Log while the test runs, and drops

@@ -179,7 +179,6 @@ func devJoin(ctx context.Context, server, room, name string) (wire.Joined, error
 	if err != nil {
 		return j, err
 	}
-	m := devjoin.RTC(j)
-	slog.Info("voice: dev join", "room", j.Room, "identity", j.Identity, "media", m.Kind, "mediaURL", m.URL)
+	slog.Info("voice: dev join", "room", j.Room, "identity", j.Identity, "mediaURL", j.MediaURL)
 	return j, nil
 }

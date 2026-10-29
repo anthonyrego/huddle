@@ -2,8 +2,7 @@ package room
 
 // The allocator under Dynacast: layers nobody is sent, layers wanted
 // again, stand-ins, and probes. (TestAllocate and TestSqueeze, in
-// video_test.go, are the allocator with every layer wanted, as on
-// LiveKit.)
+// video_test.go, are the allocator with every layer wanted.)
 
 import (
 	"slices"

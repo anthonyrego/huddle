@@ -2,11 +2,10 @@ package room
 
 // huddle's own SFU (internal/server/sfu) as a room's transport, through
 // sfuclient: a join of the server's /rtc with the token the dev join gave,
-// a connection to publish on and one to receive on. It mirrors lk.go; what
-// LiveKit's SDK did for us there (participants, subscriptions, simulcast,
-// the audio level) sfuclient and the SFU do here. One thing more: the SFU
-// says which layers of a video we publish anyone is sent (Dynacast), and
-// the video pauses the rest (wantedOut); lksdk never passed LiveKit's on.
+// a connection to publish on and one to receive on. sfuclient and the SFU
+// keep the participants, the subscriptions, simulcast and the audio level;
+// the SFU also says which layers of a video we publish anyone is sent
+// (Dynacast), and the video pauses the rest (wantedOut).
 //
 // sfuclient has no resume: a connection that fails, the signalling going,
 // or the server's bye ends the session (disconnected), and the app joins
@@ -54,7 +53,9 @@ type sfuTransport struct {
 	wanted map[string][]string
 }
 
-// dialSFU joins the SFU's room with the token j carries.
+// dialSFU joins the SFU's room with the token j carries. ev hears what
+// happens from the moment it's called, on the transport's goroutines,
+// until leave.
 func dialSFU(ctx context.Context, j rtc.Join, cfg dialConfig, ev transportEvents) (transport, error) {
 	t := &sfuTransport{ready: make(chan struct{}), videos: map[string]*sfuVideo{}, wanted: map[string][]string{}}
 	defer close(t.ready)
@@ -103,8 +104,8 @@ func loopbackURL(u string) bool {
 }
 
 // sfuJoinError says why a join failed in the words the app shows ("Voice:
-// …" in the device menu), as LiveKit's do: a server that can't be reached,
-// or one that turned the join away.
+// …" in the device menu): a server that can't be reached, or one that
+// turned the join away.
 func sfuJoinError(err error) error {
 	var op *net.OpError
 	var refused *sfuclient.RefusedError

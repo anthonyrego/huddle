@@ -135,8 +135,8 @@ func (s *lossyStream) run(t *testing.T, length time.Duration, seed uint64) {
 }
 
 // TestAssembleHeavyLossKeepsUp: at 20% loss, with two in five lost
-// packets never resent (what LiveKit does once a keyframe has been asked
-// for), the assembler keeps up: each hole is waited for lossWait from when
+// packets never resent (as an SFU that stops resending once a keyframe has
+// been asked for leaves them), the assembler keeps up: each hole is waited for lossWait from when
 // it showed, not from when the assembler got to it, so holes don't queue
 // one wait behind another. Before, the frames fell seconds behind.
 func TestAssembleHeavyLossKeepsUp(t *testing.T) {

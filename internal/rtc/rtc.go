@@ -1,7 +1,8 @@
-// Package rtc is the app's side of a meeting's media: joining the LiveKit
-// room, sending the microphone and hearing everyone else. Track V
-// implements it with LiveKit's Go SDK (pion, no cgo); the app only sees
-// this interface, so the board stage and the voice session grow apart.
+// Package rtc is the app's side of a meeting's media: joining the room on
+// the media server, sending the microphone and camera, and hearing and
+// seeing everyone else. internal/rtc/room implements it on huddled's own
+// SFU (pion, no cgo); the app only sees this interface, so the board stage
+// and the call grow apart.
 //
 // Audio crosses this boundary as 48 kHz mono float32 PCM in 10 ms frames
 // (480 samples). Opus, jitter buffers and mixing live behind it.
@@ -22,9 +23,6 @@ const (
 
 // Join is what the server's join answer gives the app.
 type Join struct {
-	// Kind is the media server: wire.MediaLiveKit (or empty) or
-	// wire.MediaBuiltin.
-	Kind     string
 	URL      string // the media server's WebSocket URL
 	Token    string // its token for one room and identity
 	Identity string
@@ -97,7 +95,7 @@ type Room interface {
 	Leave()
 }
 
-// Connector joins rooms. Track V provides the LiveKit one.
+// Connector joins rooms (internal/rtc/room).
 type Connector interface {
 	Connect(ctx context.Context, j Join, ev Events) (Room, error)
 }

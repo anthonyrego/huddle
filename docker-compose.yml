@@ -1,7 +1,7 @@
 # The local dev stack: Postgres for the server. An S3 stand-in joins in
 # stage 4 (recordings); MinIO no longer publishes community images.
-# LiveKit runs natively (make livekit), so its UDP ports and the address it
-# advertises need no Docker NAT.
+# The media server is huddled's own (make server), so its UDP port and the
+# address it advertises need no Docker NAT.
 #
 # Dev credentials only; never reuse them anywhere real.
 name: huddle

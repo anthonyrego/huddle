@@ -199,9 +199,9 @@ func (b *Buffer) observe(ts int64, at time.Time) {
 	// A quiet with no packets at all (a mic sends a DTX frame every 400 ms,
 	// so this is a muted mic, or the whiteboard between answers) ends what
 	// the window knows, and the next talk spurt is measured on its own. What
-	// came before can be stale: LiveKit pads a track nobody has sent on yet
-	// with 5 s of frames whose timestamps run slower than they arrive, which
-	// alone holds the target at its most for the next 250 packets.
+	// came before can be stale: an SFU that pads a track nobody has sent on
+	// yet, with 5 s of frames whose timestamps run slower than they arrive,
+	// alone held the target at its most for the next 250 packets.
 	if b.baseAt.IsZero() || at.Sub(b.lastAt) > quietReset {
 		b.baseAt, b.baseTS = at, ts
 		b.transits, b.ti = b.transits[:0], 0

@@ -297,9 +297,10 @@ func TestJitterRaisesThenLowersTarget(t *testing.T) {
 	}
 }
 
-// TestPaddingThenSpeech is the whiteboard's track as a new subscriber gets
-// it: LiveKit's 5 s of padding, whose timestamps step 961 every ~21.8 ms
-// (slower than they arrive), then quiet, then an answer at 20 ms a frame.
+// TestPaddingThenSpeech is a track as a new subscriber got it from an SFU
+// that pads one that hasn't sent: 5 s of padding, whose timestamps step
+// 961 every ~21.8 ms (slower than they arrive), then quiet, then an answer
+// at 20 ms a frame.
 // The answer is measured on its own, at the floor, not at the most the
 // padding's drift left in the window. A mic's DTX frame every 400 ms keeps
 // the window, so its jitter carries across a pause.

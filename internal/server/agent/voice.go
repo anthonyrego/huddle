@@ -19,11 +19,10 @@ const (
 	tailMs   = 300               // speaking lasts this long past the last frame
 	// keepAlive is how many 20 ms ticks go by between answers before a
 	// silent frame is sent, as a person's mic sends a DTX frame every
-	// 400 ms. A track that has never sent is padded by LiveKit for a new
-	// subscriber, with frames whose timestamps drift about 1 ms a packet,
-	// and an answer starting during the padding played up to 300 ms late
-	// (AGENTS.md); between answers the frames keep the receivers' jitter
-	// windows going.
+	// 400 ms: between answers the frames keep the receivers' jitter
+	// windows going (a jitter buffer starts its target over after a second
+	// with no packets) and show the track alive from the moment it's
+	// published.
 	keepAlive = 20
 )
 

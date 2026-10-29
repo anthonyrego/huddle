@@ -75,8 +75,9 @@ func TestCountdown(t *testing.T) {
 	}
 }
 
-// Voice retries on its own when LiveKit can't be reached, takes a new join
-// at once, and asks for one when its token is too old to join with.
+// Voice retries on its own when the media server can't be reached, takes a
+// new join at once, and asks for one when its token is too old to join
+// with.
 func TestVoiceRetries(t *testing.T) {
 	old := tokenFresh
 	tokenFresh = 0
@@ -90,7 +91,7 @@ func TestVoiceRetries(t *testing.T) {
 	if st := c.snapshot(); st.status != callWaiting {
 		t.Fatalf("before a join: %q", st.status)
 	}
-	c.onJoin(wire.Joined{Room: "r", Identity: "ann-1", LiveKitURL: "ws://" + closedAddr(t), Token: "x"})
+	c.onJoin(wire.Joined{Room: "r", Identity: "ann-1", Media: wire.MediaBuiltin, MediaURL: "ws://" + closedAddr(t) + "/rtc", Token: "x"})
 	waitFor(t, "a retry", 10*time.Second, func() bool { return c.snapshot().status == callRetry })
 	st := c.snapshot()
 	if st.retryIn < 1 || st.canMute || !strings.Contains(st.lostErr, "join the voice room") {
@@ -104,16 +105,15 @@ func TestVoiceRetries(t *testing.T) {
 		t.Fatal("no rejoin asked for")
 	}
 	waitFor(t, "waiting for the server", 2*time.Second, func() bool { return c.snapshot().status == callWaiting })
-	c.onJoin(wire.Joined{Room: "r", Identity: "ann-2", LiveKitURL: "ws://" + closedAddr(t), Token: "y"})
+	c.onJoin(wire.Joined{Room: "r", Identity: "ann-2", Media: wire.MediaBuiltin, MediaURL: "ws://" + closedAddr(t) + "/rtc", Token: "y"})
 	waitFor(t, "the new join tried", 10*time.Second, func() bool {
 		s := c.snapshot()
 		return s.status == callRetry || s.status == callJoining
 	})
 }
 
-// Voice retries the same way when huddled's own media server can't be
-// reached, and says so in the same words.
-func TestVoiceRetriesBuiltin(t *testing.T) {
+// A media server that can't be reached is named in the bar's words.
+func TestVoiceRetriesUnreachable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c := newCall(true, "", nil)

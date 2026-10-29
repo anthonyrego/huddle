@@ -39,7 +39,7 @@ func units(n, keyEvery int) [][]byte {
 	return out
 }
 
-// packetize is what lksdk's WriteSample does: one packetizer, 1200-byte
+// packetize is what a publisher's track does: one packetizer, 1200-byte
 // packets, the marker on each unit's last.
 func packetize(aus [][]byte) []*rtp.Packet {
 	pz := rtp.NewPacketizer(1200, 96, 1234, &codecs.H264Payloader{}, rtp.NewRandomSequencer(), 90000)
@@ -475,11 +475,6 @@ func TestSyncClocks(t *testing.T) {
 	a.read(asr)
 	if gap2, si, _ := syncGap(&v, &a, vts, ats); si.How != "arrivals" || gap2 != gap || durAbs(si.Reports-want(encoded[59])) > 100*time.Microsecond {
 		t.Fatalf("with reports too: %v by %q, reports %v", gap2, si.How, si.Reports)
-	}
-	// LiveKit's made-up silence doesn't count as the voice's arrival.
-	silence := append([]byte{0xf8, 0xff, 0xfe}, make([]byte, 77)...)
-	if !madeUpSilence(silence) || madeUpSilence([]byte{0xf8, 0xff, 0xfe}) || madeUpSilence(append([]byte{0xf8, 0xff, 0xfe, 1}, make([]byte, 76)...)) {
-		t.Fatal("LiveKit's silent frame read wrong")
 	}
 }
 

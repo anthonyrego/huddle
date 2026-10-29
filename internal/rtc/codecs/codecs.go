@@ -56,8 +56,7 @@ var H264 = webrtc.RTPCodecCapability{
 // (a simulcast layer's SSRC isn't in the SDP; the receiver learns it from
 // these on the first packets).
 //
-// The voice carries no transport-wide numbers, as with LiveKit. The
-// numbers are given as packets are written, and the client's pacer sends
+// The voice carries no transport-wide numbers. The numbers are given as packets are written, and the client's pacer sends
 // the voice at once, ahead of the video it holds: numbered, the voice went
 // out ahead of video numbered before it, and pion's GCC, reading the far
 // end's feedback in number order, saw departures run backwards whenever a

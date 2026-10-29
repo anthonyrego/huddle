@@ -10,9 +10,8 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-// Media is how the whiteboard reaches a room's media: a LiveKit server
-// (LiveKit, lkroom.go) or huddled's own SFU (Builtin, sfuroom.go). One
-// serves every room.
+// Media is how the whiteboard reaches a room's media: huddled's own SFU,
+// joined in-process (Builtin, sfuroom.go). One serves every room.
 type Media interface {
 	// Join enters room as the whiteboard (Identity, an agent participant)
 	// and tells h who's there and what they say until Leave.

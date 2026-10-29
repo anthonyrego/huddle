@@ -15,48 +15,17 @@ import (
 	"github.com/anthonyrego/huddle/internal/wire"
 )
 
-func TestMediaLiveKit(t *testing.T) {
-	t.Setenv("HUDDLE_MEDIA", "livekit")
-	t.Setenv("HUDDLE_NODE_IP", "192.0.2.7")
-	t.Setenv("LIVEKIT_URL", "ws://lk:7880")
-	t.Setenv("LIVEKIT_API_KEY", "devkey")
-	t.Setenv("LIVEKIT_API_SECRET", "secret")
-	m, err := newMedia(":8080")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lk, ok := m.agent.(agent.LiveKit); !ok || lk.URL != "ws://lk:7880" || lk.Minter.Key != "devkey" {
-		t.Fatalf("the whiteboard's media: %#v", m.agent)
-	}
-	var s httpapi.Server
-	m.api(&s)
-	if s.Media != wire.MediaLiveKit || s.LiveKitURL != "ws://lk:7880" || s.Minter.Secret != "secret" || s.RTC != nil {
-		t.Fatalf("the API's media: %+v", s)
-	}
-	if got := m.attrs(); len(got) != 6 || got[3] != "192.0.2.7" {
-		t.Fatalf("logged as %v", got)
-	}
-
-	t.Setenv("LIVEKIT_API_SECRET", "")
-	if _, err := newMedia(":8080"); err == nil || !strings.Contains(err.Error(), "LIVEKIT_API_SECRET") {
-		t.Fatalf("no LiveKit secret: %v", err)
-	}
-}
-
-func TestMediaBuiltin(t *testing.T) {
-	// The default, and no LiveKit needed: the SFU is huddled's, on the HTTP
-	// port's number.
-	t.Setenv("HUDDLE_MEDIA", "")
-	t.Setenv("LIVEKIT_URL", "")
+func TestMedia(t *testing.T) {
+	// The SFU is huddled's, on the HTTP port's number.
 	t.Setenv("HUDDLE_RTC_SECRET", "")
 	t.Setenv("HUDDLE_NODE_IP", "127.0.0.1")
 	m, err := newMedia("127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("builtin: %v", err)
+		t.Fatalf("newMedia: %v", err)
 	}
 	var s httpapi.Server
 	m.api(&s)
-	if b, ok := m.agent.(agent.Builtin); s.Media != wire.MediaBuiltin || s.RTC == nil || len(s.RTCMinter.Secret) != 32 || !ok || b.SFU != m.sfu {
+	if b, ok := m.agent.(agent.Builtin); s.RTC == nil || len(s.Minter.Secret) != 32 || !ok || b.SFU != m.sfu {
 		t.Fatalf("the API's media: %+v; the whiteboard's %#v", s, m.agent)
 	}
 	m.close()
@@ -67,10 +36,6 @@ func TestMediaBuiltin(t *testing.T) {
 	t.Setenv("HUDDLE_NODE_IP", "not-an-ip")
 	if _, err := newMedia("127.0.0.1:0"); err == nil || !strings.Contains(err.Error(), "HUDDLE_NODE_IP") {
 		t.Fatalf("a node IP that isn't one: %v", err)
-	}
-	t.Setenv("HUDDLE_MEDIA", "carrier-pigeon")
-	if _, err := newMedia(":8080"); err == nil || !strings.Contains(err.Error(), "builtin or livekit") {
-		t.Fatalf("an unknown media server: %v", err)
 	}
 }
 
@@ -99,7 +64,6 @@ func (rooms) EnsureRoom(context.Context, string) error { return nil }
 // join through the dev join, connect to the SFU at the URL and with the
 // token it gave them, and one hears the other.
 func TestBuiltinThroughTheDevJoin(t *testing.T) {
-	t.Setenv("HUDDLE_MEDIA", "builtin")
 	t.Setenv("HUDDLE_RTC_SECRET", "")
 	t.Setenv("HUDDLE_NODE_IP", "127.0.0.1")
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

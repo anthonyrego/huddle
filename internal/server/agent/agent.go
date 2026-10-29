@@ -1,6 +1,6 @@
 // Package agent is the whiteboard: one per active room, run by huddled
-// serve. It joins the room's media (media.go: LiveKit, or huddled's own
-// SFU) as an agent participant and listens to each person's voice
+// serve. It joins the room's media (media.go: huddled's own SFU,
+// in-process) as an agent participant and listens to each person's voice
 // (ears.go: Opus decoded in pure Go, a voice detector, and a streaming
 // transcription session per person). The transcript goes through the gate
 // (internal/gate); what the gate lets through, and typed commands from the

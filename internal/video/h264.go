@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-// H.264's two byte formats. The network (RTP, and lksdk's packetizer) and
+// H.264's two byte formats. The network (RTP, and pion's packetizer) and
 // the app's own frames use Annex-B, NAL units each after a start code;
 // VideoToolbox uses AVCC, each after its length in 4 bytes, with the
 // parameter sets (SPS and PPS) kept apart in a format description.

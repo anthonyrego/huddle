@@ -22,13 +22,13 @@ import (
 // pliEvery is the least time between two keyframe requests for one track.
 // While it waits for a keyframe and none is on its way (the assembler
 // holds no packet of one), a track asks again every pliEvery. An SFU may
-// drop an ask (LiveKit forwards one a second for a top layer), so asking
-// again sooner comes sooner after its limit; but LiveKit stops resending
-// once asked, until it forwards a keyframe's first packet, so an ask while
-// a keyframe is on its way, unseen, costs it its mending. 300 ms is past
-// the longest a keyframe took to start coming after an ask LiveKit
-// forwarded (50–250 ms at 20% loss with 40 ms jitter); at 500 ms the
-// freezes there ran to 1.3 s.
+// drop an ask (ours sends a layer one per 200 ms), so asking again sooner
+// comes sooner after its limit; but an SFU that stops resending once
+// asked, until it forwards a keyframe's first packet, loses its mending to
+// an ask while a keyframe is on its way, unseen. 300 ms is past the
+// longest a keyframe took to start coming after a forwarded ask (50–250 ms
+// at 20% loss with 40 ms jitter); at 500 ms the freezes there ran to
+// 1.3 s.
 const pliEvery = 300 * time.Millisecond
 
 // Lip sync bounds.
@@ -455,12 +455,12 @@ func VideoTracks(rm rtc.Room) []VideoTrackStats {
 // the least delay is the same for both.
 //
 // Lip sync goes by arrivals. They're there from the first packets, where
-// reports come through LiveKit only seconds in (frames led the voice by
+// an SFU's reports may come only seconds in (frames led the voice by
 // 40–55 ms until then); and they're steadier: a sender report (pion's)
 // stamps the last packet written, so a video's maps its frame's capture
 // time to when the frame came out of the encoder, 1–13 ms later from one
-// report to the next (one every 3 s through LiveKit; a frame after a
-// keyframe more), where the least delay over a window takes the quickest.
+// report to the next (a frame after a keyframe more), where the least
+// delay over a window takes the quickest.
 // The voice's reports and arrivals agreed within a millisecond.
 type srClock struct {
 	mu  sync.Mutex

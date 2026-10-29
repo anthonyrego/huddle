@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anthonyrego/huddle/internal/server/lktoken"
 	"github.com/anthonyrego/huddle/internal/server/rtctoken"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
@@ -38,18 +37,18 @@ func join(t *testing.T, srv *httptest.Server, body string) wire.Joined {
 	return j
 }
 
+var minter = rtctoken.Minter{Secret: []byte("a-secret-of-at-least-32-characters!")}
+
 func TestDevJoin(t *testing.T) {
 	rs := rooms{}
-	s := &Server{Rooms: rs, Minter: lktoken.Minter{Key: "devkey", Secret: "a-secret-of-at-least-32-characters!"}, LiveKitURL: "ws://lk:7880", Dev: true}
+	rtc := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("rtc")) })
+	s := &Server{Rooms: rs, Minter: minter, RTC: rtc, Dev: true}
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 	j := join(t, srv, `{"room":"Design Review!","name":"Sam"}`)
-	if j.Room != "design-review" || !strings.HasPrefix(j.Identity, "sam-") || j.Token == "" || !strings.HasSuffix(j.WSURL, "/ws") {
+	host := strings.TrimPrefix(srv.URL, "http://")
+	if j.Room != "design-review" || !strings.HasPrefix(j.Identity, "sam-") || j.Media != wire.MediaBuiltin || j.MediaURL != "ws://"+host+"/rtc" || j.WSURL != "ws://"+host+"/ws" {
 		t.Fatalf("joined %+v", j)
-	}
-	// LiveKit is the default; an older app reads LiveKitURL.
-	if j.Media != wire.MediaLiveKit || j.MediaURL != "ws://lk:7880" || j.LiveKitURL != "ws://lk:7880" {
-		t.Fatalf("media %q at %q (livekit_url %q)", j.Media, j.MediaURL, j.LiveKitURL)
 	}
 	if strings.HasSuffix(j.Identity, wire.BotSuffix) {
 		t.Fatalf("a person joined as a bot: %q", j.Identity)
@@ -57,24 +56,11 @@ func TestDevJoin(t *testing.T) {
 	if !rs["design-review"] {
 		t.Fatal("room wasn't made")
 	}
-}
-
-func TestDevJoinBuiltin(t *testing.T) {
-	m := rtctoken.Minter{Secret: []byte("a-secret-of-at-least-32-characters!")}
-	rtc := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("rtc")) })
-	s := &Server{Rooms: rooms{}, Media: wire.MediaBuiltin, RTCMinter: m, RTC: rtc, Dev: true}
-	srv := httptest.NewServer(s.Handler())
-	defer srv.Close()
-	j := join(t, srv, `{"room":"standup","name":"Ann"}`)
-	host := strings.TrimPrefix(srv.URL, "http://")
-	if j.Media != wire.MediaBuiltin || j.MediaURL != "ws://"+host+"/rtc" || j.LiveKitURL != "" || j.WSURL != "ws://"+host+"/ws" {
-		t.Fatalf("joined %+v", j)
-	}
-	g, err := m.Verify(j.Token, time.Now())
+	g, err := minter.Verify(j.Token, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if g.Room != "standup" || g.Identity != j.Identity || g.Name != "Ann" || g.Agent {
+	if g.Room != "design-review" || g.Identity != j.Identity || g.Name != "Sam" || g.Agent {
 		t.Fatalf("grant %+v", g)
 	}
 	// The SFU's signalling is mounted.
@@ -90,7 +76,7 @@ func TestDevJoinBuiltin(t *testing.T) {
 }
 
 func TestDevJoinBot(t *testing.T) {
-	s := &Server{Rooms: rooms{}, Minter: lktoken.Minter{Key: "devkey", Secret: "a-secret-of-at-least-32-characters!"}, LiveKitURL: "ws://lk:7880", Dev: true}
+	s := &Server{Rooms: rooms{}, Minter: minter, Dev: true}
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 	a := join(t, srv, `{"room":"r","name":"Echo","bot":true}`)
@@ -116,8 +102,9 @@ func TestNoRTCUnlessSet(t *testing.T) {
 	}
 }
 
-func TestDevJoinUnknownMedia(t *testing.T) {
-	s := &Server{Rooms: rooms{}, Media: "carrier-pigeon", Dev: true}
+// A server with no secret to sign media tokens with refuses the join.
+func TestDevJoinNoSecret(t *testing.T) {
+	s := &Server{Rooms: rooms{}, Dev: true}
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 	res, err := http.Post(srv.URL+"/dev/join", "application/json", strings.NewReader(`{"room":"r","name":"n"}`))

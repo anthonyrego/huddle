@@ -12,7 +12,6 @@ import (
 
 	"github.com/anthonyrego/huddle/internal/rtc"
 	"github.com/anthonyrego/huddle/internal/rtc/sfuclient"
-	"github.com/anthonyrego/huddle/internal/wire"
 	"github.com/anthonyrego/huddle/internal/wire/signal"
 )
 
@@ -27,21 +26,14 @@ type Mic interface {
 }
 
 // JoinMic joins the media server a dev join named (devjoin.RTC's answer)
-// and publishes a microphone named name there; on huddled's own SFU it
-// returns once the microphone is connected, so the first frame written is
-// heard. A bot that publishes doesn't subscribe to anything.
+// and publishes a microphone named name there, returning once the
+// microphone is connected, so the first frame written is heard. A bot that
+// publishes doesn't subscribe to anything.
 func JoinMic(ctx context.Context, m rtc.Join, name string) (Mic, error) {
-	switch m.Kind {
-	case wire.MediaBuiltin:
-		return joinSFU(ctx, m, name, sfuclient.Options{SendOnly: true})
-	case wire.MediaLiveKit, "":
-		return joinLiveKit(m, name)
-	}
-	return nil, fmt.Errorf("the media server %q", m.Kind)
+	return joinSFU(ctx, m, name, sfuclient.Options{SendOnly: true})
 }
 
-// sfuMic is a microphone on huddled's own SFU: a session that only
-// publishes.
+// sfuMic is a microphone on the SFU: a session that only publishes.
 type sfuMic struct {
 	s    *sfuclient.Session
 	t    *sfuclient.Track

@@ -25,7 +25,6 @@ import (
 // and the SFU's /rtc. It returns the server's URL and its media.
 func builtinServer(t *testing.T) (string, *media) {
 	t.Helper()
-	t.Setenv("HUDDLE_MEDIA", "builtin")
 	t.Setenv("HUDDLE_RTC_SECRET", "")
 	t.Setenv("HUDDLE_NODE_IP", "127.0.0.1")
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

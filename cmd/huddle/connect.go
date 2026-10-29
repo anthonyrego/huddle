@@ -51,8 +51,7 @@ func (c *conn) join(ctx context.Context) error {
 	c.joined = j
 	c.redo.Store(false) // a fresh token is what a rejoin asks for
 	c.mt.update(func(s *meetingState) { s.room, s.identity = c.joined.Room, c.joined.Identity })
-	m := devjoin.RTC(j)
-	slog.Info("conn: joined", "room", j.Room, "identity", j.Identity, "media", m.Kind, "mediaURL", m.URL)
+	slog.Info("conn: joined", "room", j.Room, "identity", j.Identity, "mediaURL", j.MediaURL)
 	if c.onJoin != nil {
 		c.onJoin(c.joined)
 	}

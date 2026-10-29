@@ -8,13 +8,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"unicode"
 
-	"github.com/anthonyrego/huddle/internal/server/lktoken"
 	"github.com/anthonyrego/huddle/internal/server/rtctoken"
 	"github.com/anthonyrego/huddle/internal/wire"
 )
@@ -28,17 +26,10 @@ type Rooms interface {
 // Server answers the app.
 type Server struct {
 	Rooms Rooms
-	// Media is the media server the dev join sends people to:
-	// wire.MediaLiveKit (when empty) or wire.MediaBuiltin.
-	Media string
-	// Minter and LiveKitURL are LiveKit's: tokens signed with its API key,
-	// and its URL as apps reach it (ws://host:7880).
-	Minter     lktoken.Minter
-	LiveKitURL string
-	// RTCMinter signs tokens for huddled's own SFU (builtin), whose
-	// signalling RTC serves at GET /rtc when set.
-	RTCMinter rtctoken.Minter
-	RTC       http.Handler
+	// Minter signs the dev join's tokens for huddled's own SFU, whose
+	// signalling RTC serves at GET /rtc.
+	Minter rtctoken.Minter
+	RTC    http.Handler
 	// WS serves the meeting WebSocket.
 	WS http.Handler
 	// Dev allows /dev/join: anyone who can reach the server joins any room
@@ -87,25 +78,14 @@ func (s *Server) devJoin(w http.ResponseWriter, r *http.Request) {
 	if req.Bot {
 		identity += wire.BotSuffix
 	}
-	j := wire.Joined{Room: room, Identity: identity, WSURL: wsURL(r, "/ws")}
-	var err error
-	switch s.Media {
-	case wire.MediaLiveKit, "":
-		j.Media, j.MediaURL, j.LiveKitURL = wire.MediaLiveKit, s.LiveKitURL, s.LiveKitURL
-		j.Token, err = s.Minter.Mint(lktoken.Grant{Room: room, Identity: identity, Name: name})
-	case wire.MediaBuiltin:
-		j.Media, j.MediaURL = wire.MediaBuiltin, wsURL(r, "/rtc")
-		j.Token, err = s.RTCMinter.Mint(rtctoken.Grant{Room: room, Identity: identity, Name: name})
-	default:
-		err = fmt.Errorf("no media server %q", s.Media)
-	}
+	token, err := s.Minter.Mint(rtctoken.Grant{Room: room, Identity: identity, Name: name})
 	if err != nil {
-		slog.Error("api: mint", "media", s.Media, "err", err)
+		slog.Error("api: mint", "err", err)
 		httpError(w, http.StatusInternalServerError, "couldn't make a media token")
 		return
 	}
-	slog.Info("api: dev join", "room", room, "identity", identity, "media", j.Media)
-	writeJSON(w, j)
+	slog.Info("api: dev join", "room", room, "identity", identity)
+	writeJSON(w, wire.Joined{Room: room, Identity: identity, Media: wire.MediaBuiltin, MediaURL: wsURL(r, "/rtc"), Token: token, WSURL: wsURL(r, "/ws")})
 }
 
 // wsURL is a WebSocket at path on the host the app reached.

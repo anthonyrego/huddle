@@ -1,7 +1,7 @@
 package main
 
-// The call: the meeting's voice, for the window. It joins the LiveKit room
-// with the token the dev join gave the connection, opens the voice path
+// The call: the meeting's voice, for the window. It joins the room on the
+// media server with the token the dev join gave the connection, opens the voice path
 // (macOS voice processing, so the mic is echo-cancelled against what the
 // speakers play), publishes the mic and plays everyone else. With -no-voice
 // it never opens the mic: it listens through the speakers alone.
@@ -126,8 +126,8 @@ func (c *call) onJoin(j wire.Joined) {
 
 // run joins voice with the connection's token and keeps it joined until
 // ctx ends. When joining fails or the room is lost, it tries again with
-// backoff on its own (the meeting connection may be fine while LiveKit is
-// down); a token too old to join with is traded for a new join. A new join
+// backoff on its own (the meeting connection may be fine while the media
+// server can't be reached); a token too old to join with is traded for a new join. A new join
 // from the connection (it reconnected, as someone new) moves voice to it.
 func (c *call) run(ctx context.Context) {
 	defer c.hangUp()

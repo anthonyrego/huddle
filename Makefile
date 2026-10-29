@@ -14,23 +14,20 @@ SIGN ?= -
 HUDDLE_ENV ?= $(CURDIR)/.env
 KEY = GEMINI_API_KEY="$${GEMINI_API_KEY:-$$(sed -n 's/^GEMINI_API_KEY=//p' "$(HUDDLE_ENV)" 2>/dev/null | tail -1 | tr -d "\"'")}"
 
-# This Mac's address on the LAN, which huddled's SFU (or LiveKit) advertises
-# and the other Mac dials. Override with LAN_IP=... when it guesses wrong.
+# This Mac's address on the LAN, which huddled's SFU advertises and the
+# other Mac dials. Override with LAN_IP=... when it guesses wrong.
 LAN_IP ?= $(shell ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo 127.0.0.1)
 
-# The dev stack (docker-compose.yml; make livekit only for
-# HUDDLE_MEDIA=livekit). Dev credentials only: livekit-server --dev uses
-# devkey/secret.
+# The dev stack (docker-compose.yml). Dev credentials only.
 DATABASE_URL ?= postgres://huddle:huddle@127.0.0.1:5442/huddle?sslmode=disable
 TEST_DATABASE_URL ?= postgres://huddle:huddle@127.0.0.1:5442/huddle_test?sslmode=disable
-LIVEKIT_URL ?= ws://$(LAN_IP):7880
 SERVER ?= http://localhost:8080
 ROOM ?= test
 
 GO = CGO_ENABLED=0 go
 
 .PHONY: build app run render test test-db vet shaders shaders-check nocgo check bot voice-check \
-	dev-up dev-down livekit server notarize lan-ip live-probe fixtures agent-check meet
+	dev-up dev-down server notarize lan-ip live-probe fixtures agent-check meet
 
 build:
 	$(GO) build -o build/huddle ./cmd/huddle
@@ -80,18 +77,11 @@ dev-up:
 dev-down:
 	docker compose down
 
-# LiveKit on this Mac, reachable from the LAN (brew install livekit), for
-# HUDDLE_MEDIA=livekit make server until LiveKit is deleted.
-livekit:
-	livekit-server --dev --bind 0.0.0.0 --node-ip "$(LAN_IP)"
-
 # The server on this Mac, reachable from the LAN, in dev mode. Its media
 # goes through its own SFU, which offers LAN_IP on the HTTP port's number
-# (UDP 8080), or, until LiveKit is deleted, HUDDLE_MEDIA=livekit make server
-# with make livekit.
+# (UDP 8080).
 server: build
-	@HUDDLE_DEV=1 DATABASE_URL="$(DATABASE_URL)" HUDDLE_NODE_IP="$(LAN_IP)" LIVEKIT_URL="$(LIVEKIT_URL)" \
-		LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret $(KEY) ./build/huddled serve $(ARGS)
+	@HUDDLE_DEV=1 DATABASE_URL="$(DATABASE_URL)" HUDDLE_NODE_IP="$(LAN_IP)" $(KEY) ./build/huddled serve $(ARGS)
 
 # Notarizes build/Huddle.app (signed with a Developer ID certificate) and
 # staples the ticket, so it opens on another Mac without a warning.
@@ -133,11 +123,11 @@ fixtures: build
 	./build/huddled fixtures
 
 # Scores the whiteboard on a fixture meeting, the whole server in-process
-# on huddled's own SFU (HUDDLE_MEDIA=livekit: through make livekit), e.g.
+# on huddled's own SFU, e.g.
 # make agent-check MEETING=review [ARGS="-voice answers"]
 MEETING ?= review
 agent-check: build
-	@DATABASE_URL="$(DATABASE_URL)" HUDDLE_NODE_IP="$(LAN_IP)" LIVEKIT_URL="$(LIVEKIT_URL)" LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret \
+	@DATABASE_URL="$(DATABASE_URL)" HUDDLE_NODE_IP="$(LAN_IP)" \
 		$(KEY) ./build/huddled agent-check -meeting testdata/meetings/$(MEETING).txt $(ARGS)
 
 # Dev: fixture bots join ROOM on SERVER and play MEETING (make fixtures

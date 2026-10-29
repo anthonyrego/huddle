@@ -4,8 +4,7 @@
 // into its own jitter buffer, and mixes them for the speaker with the
 // playout package; it sends and receives video too (video.go,
 // videorecv.go). What it says to the server goes through a transport
-// (transport.go): LiveKit's Go SDK (lk.go), or huddle's own SFU through
-// sfuclient (sfu.go).
+// (transport.go): huddle's own SFU through sfuclient (sfu.go).
 package room
 
 import (
@@ -87,10 +86,6 @@ func simSeed() uint64 { return uint64(time.Now().UnixNano()) }
 
 // Connect joins the room the token is for.
 func (c *Connector) Connect(ctx context.Context, j rtc.Join, ev rtc.Events) (rtc.Room, error) {
-	dial, err := dialer(j.Kind)
-	if err != nil {
-		return nil, err
-	}
 	r := &room{cfg: c, ev: ev, mix: playout.New(), tracks: map[string]*remote{}, videos: map[string]*videoTrack{}, sfuLevel: map[string]float32{}, quit: make(chan struct{})}
 	r.cc = newVideoCC(r)
 	r.ctx, r.cancel = context.WithCancel(context.Background())
@@ -110,7 +105,7 @@ func (c *Connector) Connect(ctx context.Context, j rtc.Join, ev rtc.Events) (rtc
 	if c.Uplink > 0 {
 		cfg.send = append(cfg.send, &icept.Uplink{BPS: c.Uplink, Slots: icept.UplinkSlots, Made: r.cc.addUplink})
 	}
-	t, err := dial(ctx, j, cfg, transportEvents{
+	t, err := dialSFU(ctx, j, cfg, transportEvents{
 		arrived: func(p rtc.Participant) {
 			slog.Info("voice: arrived", "identity", p.Identity)
 			if ev.Arrived != nil {
@@ -298,28 +293,9 @@ func (t *remote) read(track *webrtc.TrackRemote, ext int) {
 		if t.arrival != nil {
 			t.arrival(t.who, p.SequenceNumber, p.Timestamp, len(p.Payload), now)
 		}
-		if !madeUpSilence(p.Payload) {
-			t.sr.arrived(p.Timestamp, now, opus.SampleRate)
-		}
+		t.sr.arrived(p.Timestamp, now, opus.SampleRate)
 		t.buf.Push(jitter.Packet{Seq: p.SequenceNumber, TS: p.Timestamp, Payload: p.Payload}, now)
 	}
-}
-
-// madeUpSilence says whether an Opus payload is the silent frame LiveKit
-// makes up for a track that hasn't sent yet (TOC f8, then ff fe and
-// zeros, 80 bytes): its timestamps run slower than the clock, so its
-// arrivals would skew the lip-sync clock. No encoder writes a frame of
-// zeros.
-func madeUpSilence(p []byte) bool {
-	if len(p) < 8 || p[0] != 0xf8 || p[1] != 0xff || p[2] != 0xfe {
-		return false
-	}
-	for _, b := range p[3:] {
-		if b != 0 {
-			return false
-		}
-	}
-	return true
 }
 
 // unsubscribed stops playing a track we're no longer sent.

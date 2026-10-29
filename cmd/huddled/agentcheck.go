@@ -123,7 +123,7 @@ func runAgentCheck(args []string) error {
 	key := os.Getenv("GEMINI_API_KEY")
 	dbURL := os.Getenv("DATABASE_URL")
 	if key == "" || dbURL == "" {
-		return errors.New("needs GEMINI_API_KEY and DATABASE_URL (make agent-check sets them), and for HUDDLE_MEDIA=livekit LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET")
+		return errors.New("needs GEMINI_API_KEY and DATABASE_URL (make agent-check sets them)")
 	}
 	script, err := fixturemeet.Parse(*meeting)
 	if err != nil {
@@ -191,7 +191,7 @@ func runAgentCheck(args []string) error {
 	defer srv.Close()
 	server := "http://" + ln.Addr().String()
 
-	fmt.Printf("agent-check %s: room %s, voice %s, media %s, %d lines over %s\n", script.Name, room, *voice, md.kind, len(timing.Lines),
+	fmt.Printf("agent-check %s: room %s, voice %s, %d lines over %s\n", script.Name, room, *voice, len(timing.Lines),
 		(time.Duration(timing.DurationMs) * time.Millisecond).Round(time.Second))
 	agents.Ensure(room)
 	if !rec.waitFor(func(e agent.Event) bool { return e.Kind == agent.EvConnect }, 30*time.Second) {
@@ -250,7 +250,7 @@ func runAgentCheck(args []string) error {
 		return err
 	}
 	defer st2.Close()
-	rep := score(script, timing, evs, t0Ms, *voice, md.kind)
+	rep := score(script, timing, evs, t0Ms, *voice)
 	head, _ := st2.Head(rctx, room)
 	if head > 0 {
 		v, err := st2.Version(rctx, room, head)
@@ -334,9 +334,9 @@ type cmdEv struct {
 	line  int // the line it matched, -1 for none
 }
 
-func score(s *fixturemeet.Script, t *fixturemeet.Timing, evs []agent.Event, t0 int64, voice, media string) *report {
+func score(s *fixturemeet.Script, t *fixturemeet.Timing, evs []agent.Event, t0 int64, voice string) *report {
 	r := &report{}
-	r.add("== %s (voice %s, media %s)", s.Name, voice, media)
+	r.add("== %s (voice %s)", s.Name, voice)
 	var cmds []*cmdEv
 	turnOf := map[string]int{} // command id -> order its turn started
 	firstVersion := map[string]int64{}

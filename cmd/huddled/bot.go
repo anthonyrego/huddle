@@ -2,7 +2,7 @@ package main
 
 // bot: dev participants that join a room through a running server's dev
 // join (-server, as make bot passes it), as bots, and connect to the media
-// server it names (huddled's own SFU, or LiveKit: bot_lk.go):
+// server it names:
 //
 //   - echo repeats each person's voice 1.5 s later, as its own track, so
 //     one person can test alone: you hear yourself once, and never an echo
@@ -33,7 +33,6 @@ import (
 	"github.com/anthonyrego/huddle/internal/devjoin"
 	"github.com/anthonyrego/huddle/internal/fixturemeet"
 	"github.com/anthonyrego/huddle/internal/rtc"
-	rtcroom "github.com/anthonyrego/huddle/internal/rtc/room"
 	"github.com/anthonyrego/huddle/internal/rtc/sfuclient"
 	"github.com/anthonyrego/huddle/internal/wire"
 	sig "github.com/anthonyrego/huddle/internal/wire/signal"
@@ -60,7 +59,6 @@ func runBot(args []string) error {
 		return err
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
-	rtcroom.QuietSDKLogs()
 	if *name == "" {
 		*name = "Echo"
 		if kind == "cam" {
@@ -84,13 +82,10 @@ func runBot(args []string) error {
 		return err
 	}
 	m := devjoin.RTC(j)
-	slog.Info("bot: let in", "room", j.Room, "identity", j.Identity, "media", m.Kind, "mediaURL", m.URL)
+	slog.Info("bot: let in", "room", j.Room, "identity", j.Identity, "mediaURL", m.URL)
 	switch kind {
 	case "echo":
-		if m.Kind == wire.MediaBuiltin {
-			return runEcho(ctx, m, *delay, sfuclient.Options{})
-		}
-		return runEchoLiveKit(ctx, m.URL, m.Token, *delay)
+		return runEcho(ctx, m, *delay, sfuclient.Options{})
 	case "cam":
 		return runCam(ctx, m, *share)
 	default:

@@ -108,12 +108,11 @@ func median(ds []time.Duration) (time.Duration, time.Duration) {
 	return s[len(s)/2], s[len(s)*95/100]
 }
 
-// TestAudioOnlyBuiltin is TestAudioOnly on huddled's own SFU, in process,
-// with no LiveKit (CI runs it): someone publishes a voice and a camera;
-// the whiteboard, joined through Builtin, is handed the voice and reads
-// its packets, never the camera, counts one person, and is heard by them;
-// someone leaving ends their voice.
-func TestAudioOnlyBuiltin(t *testing.T) {
+// TestAudioOnly: on huddled's own SFU, in process (CI runs it), someone
+// publishes a voice and a camera; the whiteboard, joined through Builtin,
+// is handed the voice and reads its packets, never the camera, counts one
+// person, and is heard by them; someone leaving ends their voice.
+func TestAudioOnly(t *testing.T) {
 	tokens := rtctoken.Minter{Secret: []byte("a test secret")}
 	log := slog.New(slog.DiscardHandler)
 	s, err := sfu.New(sfu.Config{Network: sfu.Network{IP: "127.0.0.1", Loopback: true}, Tokens: tokens, Log: log})

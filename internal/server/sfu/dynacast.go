@@ -43,9 +43,8 @@ var dynacastFirst = 10 * time.Second
 // dynacast is what a video publication has told its publisher of the
 // layers wanted. Guarded by its publication's dmu.
 type dynacast struct {
-	until []time.Time // per layer: wanted until then (last in the set, plus dynacastShrink)
+	until []time.Time // per layer: wanted until then (last in the set plus dynacastShrink, or the publish plus dynacastFirst)
 	told  []bool      // per layer: wanted, as the publisher was last told (or assumes)
-	sent  int         // wanted messages sent
 }
 
 func newDynacast(n int, now time.Time) dynacast {
@@ -89,7 +88,6 @@ func (pub *publication) updateWanted(now time.Time) {
 	}
 	was := pub.rids(d.told)
 	d.told = tell
-	d.sent++
 	// Sent under dmu, so the publisher hears the sets in the order they
 	// were worked out.
 	rids := pub.rids(tell)
@@ -106,13 +104,6 @@ func (pub *publication) rids(ls []bool) []string {
 		}
 	}
 	return out
-}
-
-// wantedRIDs is the set the publisher was last told (for tests).
-func (pub *publication) wantedRIDs() []string {
-	pub.dmu.Lock()
-	defer pub.dmu.Unlock()
-	return pub.rids(pub.dyn.told)
 }
 
 // wanted marks in in the layers this viewer wants: the one its settings

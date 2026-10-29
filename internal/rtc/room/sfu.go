@@ -4,7 +4,9 @@ package room
 // sfuclient: a join of the server's /rtc with the token the dev join gave,
 // a connection to publish on and one to receive on. It mirrors lk.go; what
 // LiveKit's SDK did for us there (participants, subscriptions, simulcast,
-// the audio level) sfuclient and the SFU do here.
+// the audio level) sfuclient and the SFU do here. One thing more: the SFU
+// says which layers of a video we publish anyone is sent (Dynacast), and
+// the video pauses the rest (wantedOut); lksdk never passed LiveKit's on.
 //
 // sfuclient has no resume: a connection that fails, the signalling going,
 // or the server's bye ends the session (disconnected), and the app joins

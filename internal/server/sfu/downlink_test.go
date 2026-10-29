@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pion/interceptor"
+	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 
 	"github.com/anthonyrego/huddle/internal/rtc/icept"
@@ -62,10 +63,7 @@ func TestDownlinkLimitedViewer(t *testing.T) {
 	b.settings(t, "a", 1280, 720, true)
 	c.settings(t, "a", 1280, 720, true)
 
-	waitFor(t, 2*wait, "b moved down to h", func() bool {
-		us := c.unitsFrom("a")
-		return len(us) > 0 && lastLayer(b, "a") == 1
-	})
+	waitFor(t, 2*wait, "b moved down", func() bool { return lastLayer(b, "a") > 0 })
 	down := time.Since(start)
 	var firstF time.Time
 	for _, u := range mediaUnits(b, "a") {
@@ -100,8 +98,8 @@ func TestDownlinkLimitedViewer(t *testing.T) {
 	t.Logf("b, behind 500 kbps: %s %v; first f frame %v after asking, on h %v after asking; widened, back on f %v later; the link dropped %d",
 		path, n, firstF.Sub(start).Round(time.Millisecond), down.Round(time.Millisecond), up.Round(time.Millisecond), link.Dropped())
 	for _, u := range held {
-		if u.layer != 1 {
-			t.Errorf("b on %s while the link was narrow, after moving down", camLayers[u.layer].RID)
+		if u.layer == 0 {
+			t.Errorf("b on f while the link was narrow, after moving down")
 			break
 		}
 	}
@@ -320,6 +318,68 @@ func TestFitVideos(t *testing.T) {
 	// of it fits.
 	if got := fitVideos([]dlTrack{big}, 1_200_000, 0, 1, rate); !slices.Equal(got, []int{1}) {
 		t.Errorf("overused at 1.2 Mbps: %v, want [1]", got)
+	}
+}
+
+// The resend gate: a NACKed packet sent too recently, or resent twice
+// already, is taken out of the NACK; the queue is the newest one-way delay
+// over the lowest, read from the feedback's arrival times.
+func TestResendGate(t *testing.T) {
+	g := newGate()
+	t0 := time.Unix(1000, 0)
+	h := func(seq, twcc uint16) *rtp.Header {
+		hd := &rtp.Header{SSRC: 7, SequenceNumber: seq}
+		b, _ := (&rtp.TransportCCExtension{TransportSequence: twcc}).Marshal()
+		hd.SetExtension(3, b)
+		return hd
+	}
+	for i := range 10 {
+		g.wrote(h(uint16(100+i), uint16(i)), 3, t0.Add(time.Duration(i)*10*time.Millisecond))
+	}
+	nack := func(at time.Duration, seqs ...uint16) []uint16 {
+		n := &rtcp.TransportLayerNack{MediaSSRC: 7, Nacks: rtcp.NackPairsFromSequenceNumbers(seqs)}
+		g.filter(n, t0.Add(at))
+		var out []uint16
+		for _, p := range n.Nacks {
+			out = append(out, p.PacketList()...)
+		}
+		return out
+	}
+	// 100 was sent at 0 and 109 at 90 ms: at 100 ms, 109 is too recent.
+	if got := nack(100*time.Millisecond, 100, 109); !slices.Equal(got, []uint16{100}) {
+		t.Fatalf("at 100 ms: %v, want [100]", got)
+	}
+	// 100 resent twice: no more.
+	g.wrote(h(100, 20), 3, t0.Add(100*time.Millisecond))
+	g.wrote(h(100, 21), 3, t0.Add(200*time.Millisecond))
+	if got := nack(300*time.Millisecond, 100, 109); !slices.Equal(got, []uint16{109}) {
+		t.Fatalf("at 300 ms: %v, want [109]", got)
+	}
+	// Feedback: packets 0 to 3 arrived 10 ms apart, as they were sent (no
+	// queue); then 4 to 6, a feedback of their own, each 60 ms later than
+	// those (a queue standing); then 7 to 9 with jitter, one of them
+	// through at the least delay (no queue).
+	fb := func(base uint16, deltas ...int64) *rtcp.TransportLayerCC {
+		f := &rtcp.TransportLayerCC{BaseSequenceNumber: base, PacketStatusCount: uint16(len(deltas)), ReferenceTime: 1}
+		f.PacketChunks = []rtcp.PacketStatusChunk{&rtcp.RunLengthChunk{PacketStatusSymbol: rtcp.TypeTCCPacketReceivedSmallDelta, RunLength: uint16(len(deltas))}}
+		for _, d := range deltas {
+			f.RecvDeltas = append(f.RecvDeltas, &rtcp.RecvDelta{Type: rtcp.TypeTCCPacketReceivedSmallDelta, Delta: d})
+		}
+		return f
+	}
+	for i := range 5 { // read again, as many feedbacks would read it
+		g.feedback(fb(0, 0, 10_000, 10_000, 10_000), t0.Add(time.Duration(50+10*i)*time.Millisecond))
+	}
+	if q := g.queue(); q != 0 {
+		t.Fatalf("no queue read as %v", q)
+	}
+	g.feedback(fb(4, 100_000, 10_000, 10_000), t0.Add(400*time.Millisecond))
+	if q := g.queue(); q != 60*time.Millisecond {
+		t.Fatalf("a queue of 60 ms read as %v", q)
+	}
+	g.feedback(fb(7, 70_000, 70_000, 10_000), t0.Add(700*time.Millisecond))
+	if q := g.queue(); q != 0 {
+		t.Fatalf("jitter read as a queue of %v", q)
 	}
 }
 

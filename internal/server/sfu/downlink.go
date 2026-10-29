@@ -14,40 +14,48 @@ package sfu
 //
 // A subscriber's downlink starts free: every video goes at the layer its
 // viewer's settings want, as before, for as long as the link shows no sign
-// of being narrow. The first drop in GCC's estimate (to under dropBy of
-// what it was) below what's being sent makes it limited (allocate): each
-// video is given the largest layer, at or under what its viewer wants,
-// that fits the budget, the subscriber's videos in priority order (a
-// screen first, then larger tiles by the area their settings asked for,
-// then smaller), the smallest layer of each before any is raised, so a
-// lower-priority video goes off first (the highest-priority one is never
-// turned off: one video always runs, and the estimate keeps its feedback).
-// A layer is measured at the SFU (what it sent over the last rateWindow),
-// its published bitrate standing in until then.
+// of being narrow. It's limited when a queue stands in front of the link
+// (the lowest one-way delay of the last moment over the lowest of the last
+// ten seconds: resend.go) for overFor, with GCC's estimate under what's
+// being sent. GCC alone isn't enough: an estimate that settled at the
+// link's rate before more was sent doesn't drop, a queue that has filled
+// and drops what overflows no longer grows, so GCC stops seeing it, and a
+// lossy network's jitter reads to it as overuse. Limited (allocate), each video
+// is given the largest layer, at or under what its viewer wants, that fits
+// the budget, the subscriber's videos in priority order (a screen first,
+// then larger tiles by the area their settings asked for, then smaller),
+// the smallest layer of each before any is raised, so a lower-priority
+// video goes off first (the highest-priority one is never turned off: one
+// video always runs, and the estimate keeps its feedback). A layer is
+// measured at the SFU (what it sent over the last rateWindow), its
+// published bitrate standing in until then.
 //
-// The budget is GCC's estimate, capped at capFactor times the video sent
-// plus capSlack (pion's GCC climbs while less is sent than it allows),
-// less a reserve for the voices sent. A layer already being sent is kept
-// while the budget holds keepShare of it: GCC answers one overuse by
-// cutting to 0.85 of what arrived, so a layer that fills the link would be
-// dropped at the first one. Moving down is at once. Moving up is only
-// through a probe (below), and a video starting (just subscribed, or
-// turned back on) starts at what fits.
+// The budget is GCC's estimate (or what a probe showed the link carries,
+// until the next drop), less a reserve for the voices sent, and for a
+// video starting (just subscribed, or turned back on) capped at capFactor
+// times the video sent plus capSlack (pion's GCC climbs while less is sent
+// than it allows). A layer already being sent is kept while the budget
+// holds keepShare of it (GCC answers one overuse by cutting to 0.85 of
+// what arrived, so a layer that fills the link would be dropped at the
+// first one), all of it while the link is overused. Moving down is at
+// once. Moving up is only through a probe.
 //
 // A probe pads one of the subscriber's videos (the one moving up, if it
 // runs) with padding-only RTP packets between frames, rising to the next
-// layer's rate over probeRamp, with GCC's estimate to say whether the link
-// takes it: it ends at once on a fall in the estimate, and the video waits
-// holdFirst before its next try, doubling to holdMost. Probes come only
-// after calm with no drop. Carried, the video moves up a layer.
+// layer's rate over probeRamp. A queue standing in front of the link ends
+// it at once (a keyframe's burst through a narrow link drains sooner), and
+// the video waits holdFirst before its next try, doubling to holdMost.
+// Probes come only after calm with no drop, and probeSettle after a video
+// moved. Carried, the video moves up a layer.
 //
 // Once every video has had what it wants for calm, with no drop meanwhile,
 // the downlink is free again: a tile made larger gets its layer at once,
-// and if the link can't take it, the next drop limits it again.
+// and if the link can't take it, it's limited again.
 //
-// Padding is the one exception to the SFU sending no padding: video only,
-// only while probing, never on a voice (padding a voice is what once
-// pinned new subscribers' jitter buffers at 300 ms).
+// Padding is the exception to the SFU sending no padding: video only, only
+// while probing (and a byte of it in place of a publisher's probe filler:
+// layers.go), never on a voice (padding a voice is what once pinned new
+// subscribers' jitter buffers at 300 ms).
 
 import (
 	"math"
@@ -85,18 +93,18 @@ const (
 	capFactor = 1.5
 	capSlack  = 100_000
 	// dropBy is how far GCC's estimate falls, from its highest over the
-	// last dropWithin, to count as a drop: its loss-based part comes down a
-	// step at a time (to 1 − loss/2 of itself), each smaller than its
-	// delay-based part's one cut to 0.85 of what arrived.
+	// last dropWithin, to count as a drop: while it sees the link overused
+	// it's cut to 0.85 of what arrived at each feedback, and what arrived
+	// may come down a step at a time.
 	dropBy     = 0.85
 	dropWithin = time.Second
-	// overFor is how long GCC must have seen the link overused (or a queue
-	// of queueMost stood in front of it), its estimate under overShare of
-	// what's sent, to limit a free downlink.
+	// queueMost is the queue that, standing in front of the link for
+	// overFor with GCC's estimate under queueShare of what's sent, limits a
+	// free downlink (a queue is the link full, and GCC's estimate 0.85 of
+	// what gets through).
+	queueMost  = 30 * time.Millisecond
 	overFor    = 100 * time.Millisecond
-	overShare  = 0.8
-	queueMost  = 40 * time.Millisecond
-	queueShare = 0.9
+	queueShare = 0.95
 	// calm is how long since GCC's estimate last dropped before a probe,
 	// and how long everything must have had what it wants to be free.
 	calm = 10 * time.Second
@@ -107,8 +115,8 @@ const (
 	// probeQueue ends a probe: a queue that long standing in front of the
 	// link for probeQueueFor (the voice waits in it too), or at all while
 	// GCC's estimate falls.
-	probeQueue    = 20 * time.Millisecond
-	probeQueueFor = 150 * time.Millisecond
+	probeQueue    = 10 * time.Millisecond
+	probeQueueFor = 50 * time.Millisecond
 	// probeSettle is how long after a video moves before a probe: its new
 	// layer's keyframe has gone through.
 	probeSettle = 2 * time.Second
@@ -236,19 +244,10 @@ type downEstimator struct {
 // estimate is GCC's delay-based estimate (its own is the lower of that and
 // its loss-based one).
 func (e *downEstimator) estimate() int {
-	raw, _ := e.delayBased()
-	return raw
-}
-
-// delayBased is GCC's delay-based estimate, and whether that part of it
-// has seen the link overused (the queue growing) and is coming down. (Its
-// usage reads "overuse" before it has measured anything: its zero value.)
-func (e *downEstimator) delayBased() (int, bool) {
-	st := e.GetStats()
-	if v, ok := st["delayTargetBitrate"].(int); ok && v > 0 {
-		return v, st["state"] == "decrease"
+	if v, ok := e.GetStats()["delayTargetBitrate"].(int); ok && v > 0 {
+		return v
 	}
-	return e.GetTargetBitrate(), false
+	return e.GetTargetBitrate()
 }
 
 func (e *downEstimator) AddStream(info *interceptor.StreamInfo, w interceptor.RTPWriter) interceptor.RTPWriter {
@@ -323,9 +322,8 @@ type downlink struct {
 	mu        sync.Mutex
 	raw       int       // GCC's estimate, as last seen
 	recent    []rawAt   // its values over the last dropWithin
-	proven    int       // the video a probe carried, since the last drop
-	overAt    time.Time // since when GCC has seen the link overused (or a queue stood)
-	queuedAt  time.Time // since when a queue has stood in front of it
+	proven    int       // the video a probe carried, until the link pushes back
+	queuedAt  time.Time // since when a queue has stood in front of the link
 	movedAt   time.Time // when a video last moved
 	dropAt    time.Time // when it last dropped
 	wantedAt  time.Time // when a video last had less than it wants
@@ -564,7 +562,7 @@ func (dl *downlink) changed(now time.Time) {
 // estimate reads GCC's estimate; it reports whether the videos need
 // allocating again (it dropped). dl.mu is held.
 func (dl *downlink) estimate(now time.Time) bool {
-	raw, over := dl.est.delayBased()
+	raw := dl.est.estimate()
 	queue := dl.est.gate.queue()
 	high := 0
 	dl.recent = slices.DeleteFunc(dl.recent, func(r rawAt) bool { return now.Sub(r.at) > dropWithin })
@@ -579,10 +577,9 @@ func (dl *downlink) estimate(now time.Time) bool {
 	dl.raw = raw
 	if p := dl.probe; p != nil {
 		// A probe the link can't carry leaves a queue standing in front of
-		// it; a keyframe's burst through a narrow link leaves one that
-		// drains in a frame or two, and GCC's estimate may fall for it
-		// (inflated while less was sent, one overuse takes it to 0.85 of
-		// what arrived).
+		// it; GCC's estimate may fall for a keyframe's burst through a
+		// narrow link, or for jitter (inflated while less was sent, one
+		// overuse takes it to 0.85 of what arrived).
 		p.peak = max(p.peak, raw)
 		switch {
 		case queue < probeQueue:
@@ -600,48 +597,45 @@ func (dl *downlink) estimate(now time.Time) bool {
 	if drop {
 		dl.dropAt, dl.proven = now, 0
 	}
-	since := func(at *time.Time, on bool) bool {
-		switch {
-		case !on:
-			*at = time.Time{}
-		case at.IsZero():
-			*at = now
-		}
-		return on && now.Sub(*at) >= overFor
+	// Free, the downlink is limited by a queue standing in front of the
+	// link for overFor, the estimate well under what's being sent. Not by
+	// GCC alone: its delay-based part sees a queue only while it grows (an
+	// estimate settled at the link's rate before more was sent, a larger
+	// layer or a publisher's probe raising one, doesn't drop, and a queue
+	// that has filled holds still), and takes a lossy network's jitter for
+	// overuse, cutting to 0.85 of what arrived, which loss makes less than
+	// what was sent.
+	switch {
+	case queue < queueMost:
+		dl.queuedAt = time.Time{}
+	case dl.queuedAt.IsZero():
+		dl.queuedAt = now
 	}
-	queued := since(&dl.queuedAt, queue >= queueMost)
-	overused := since(&dl.overAt, over || queue >= queueMost)
-	// Free, the downlink is limited by a drop to well under what's being
-	// sent, or by GCC seeing the link overused for overFor, or a queue
-	// standing in front of it, with its estimate under what's sent: an
-	// estimate that settled at the link's rate before more was sent (a
-	// larger layer, a publisher's probe raising a layer) doesn't drop, a
-	// queue that has filled no longer grows, and one overuse on a link
-	// that's fine is gone at the next feedback.
-	sent, measured := dl.est.video.rate(now)
-	overused = overused && measured
-	if !dl.limited.Load() && (drop || overused) {
-		// What's being sent: measured, or (just started) the layers' rates.
+	queued := !dl.queuedAt.IsZero() && now.Sub(dl.queuedAt) >= overFor
+	sent, _ := dl.est.video.rate(now)
+	if queued {
+		dl.proven = 0 // the link pushes back: what a probe showed is past
+	}
+	if !dl.limited.Load() && queued {
+		// What's being sent: measured, or (a layer just switched to) the
+		// layers' measured rates. (A layer its publisher just started runs
+		// at its floor, far under its published bitrate.)
 		vs, _ := dl.videos()
 		layers := 0
 		for _, v := range vs {
-			if v.aimed >= 0 {
-				layers += v.dt.pub.layerRate(v.aimed, now)
+			if v.aimed < 0 {
+				continue
+			}
+			if bps, ok := v.dt.pub.layers[v.aimed].meter.rate(now); ok {
+				layers += bps
 			}
 		}
-		share := keepShare
-		switch {
-		case queued:
-			share = queueShare // a queue is the link full, its estimate 0.85 of it
-		case overused:
-			share = overShare
-		}
-		if float64(raw) >= share*float64(max(sent, layers)) {
-			return false // a dip the videos being sent ride out
+		if float64(raw) >= queueShare*float64(max(sent, layers)) {
+			return drop // GCC hasn't seen it yet
 		}
 		dl.limited.Store(true)
 		dl.dropAt = now
-		dl.p.log.Info("sfu: downlink limited", "estimate", raw, "sent", sent, "layers", layers, "overused", overused, "queue", queue.Round(time.Millisecond))
+		dl.p.log.Info("sfu: downlink limited", "estimate", raw, "sent", sent, "layers", layers, "queue", queue.Round(time.Millisecond))
 		return true
 	}
 	return drop
@@ -663,16 +657,16 @@ func (dl *downlink) allocate(now time.Time) {
 	sent, _ := dl.est.video.rate(now)
 	// What's being sent may keep what GCC's estimate, or a probe passed
 	// since its last drop, says the link carries (GCC's estimate climbs
-	// slowly after a drop, and a probe's padding counts only at its
-	// header's size in it).
+	// slowly after a drop: near what arrived when it cut, a packet's worth
+	// at a time).
 	keepLeft := max(dl.raw, dl.proven) - reserve
 	growLeft := min(dl.raw, int(capFactor*float64(sent))+capSlack) - reserve // for a video starting
-	// While GCC sees the link overused, or a queue stands in front of it,
-	// what's sent doesn't fit, whatever share of it the budget holds: a
+	// While a queue stands in front of the link, what's sent doesn't fit,
+	// whatever share of it the budget holds: a
 	// layer whose encoder is still rising (measured over the last
 	// rateWindow) is larger than it's measured.
 	keep := keepShare
-	if !dl.overAt.IsZero() {
+	if !dl.queuedAt.IsZero() {
 		keep = 1
 	}
 	got := fitVideos(vs, keepLeft, growLeft, keep, func(dt *downTrack, i int) int { return dt.pub.layerRate(i, now) })

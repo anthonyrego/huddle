@@ -45,7 +45,7 @@ printf "file '%s'\n" "$tmp/d.wav" "$tmp/dp.wav" >"$tmp/d.txt"
 ffmpeg -loglevel error -y -f concat -safe 0 -i "$tmp/d.txt" -c:a libopus -b:a 32k -frame_duration 20 -application voip "$dir/daniel.ogg"
 
 # Commands to the whiteboard with pauses between, over a little room noise,
-# for the ears through the app's own mic path (huddle voice -in): AGENTS.md,
+# for the ears through the app's own mic path (huddle voice -in): docs/design.md,
 # "The ears".
 line Daniel "Whiteboard, add a box called build." "$tmp/c1.wav"
 line Daniel "I think we should ship on Friday." "$tmp/c2.wav"

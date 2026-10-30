@@ -20,7 +20,7 @@ import (
 // speech sent to their own streaming transcription session. At the end of
 // each utterance the session is told the audio stream ended, so the final
 // transcript comes about half a second later instead of waiting on the
-// server's silence detection (AGENTS.md). Sessions last ten minutes, so a
+// server's silence detection (docs/design.md). Sessions last ten minutes, so a
 // session older than rotateAfter is replaced at the next utterance; the
 // service also aborts one after about a minute without audio, so a quiet
 // person's session is closed first and opened again when they speak.

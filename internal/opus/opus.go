@@ -9,7 +9,7 @@
 //     frame, fading.
 //
 // NewEncoder and NewDecoder return the one the measurements picked
-// (Libopus; AGENTS.md says why).
+// (Libopus; docs/design.md, "Voice", says why).
 package opus
 
 import (

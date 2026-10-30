@@ -32,8 +32,8 @@ import (
 	"github.com/anthonyrego/huddle/internal/video"
 )
 
-// Connector joins rooms, through the media server a join names
-// (rtc.Join.Kind). The zero value is the voice's defaults.
+// Connector joins rooms through huddled's SFU at the join's URL. The
+// zero value is the voice's defaults.
 type Connector struct {
 	// Sim, when set, is called once per remote stream; an active Sim makes
 	// that stream's network worse on receive, before the jitter buffer.

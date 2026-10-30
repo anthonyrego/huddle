@@ -452,7 +452,7 @@ func (a *Agent) calls(ctx context.Context, t *turn, calls []*genai.FunctionCall)
 
 	// Drawing that went through needs nothing more from the model, so it
 	// is answered SILENT (answered WHEN_IDLE, the model starts another
-	// generation per answer: AGENTS.md). A refusal, a read, speak and
+	// generation per answer: docs/design.md). A refusal, a read, speak and
 	// narration are answered WHEN_IDLE so the model can fix, use, say.
 	var rs []*genai.FunctionResponse
 	t.awaiting = false

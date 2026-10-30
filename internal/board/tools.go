@@ -178,7 +178,7 @@ func Tools() []*genai.Tool {
 
 // Answer applies a tool call to doc and returns the op and the response to
 // send back, scheduled for when the model is idle. The whiteboard answers
-// drawing that went through SILENT instead (AGENTS.md: answered WHEN_IDLE,
+// drawing that went through SILENT instead (docs/design.md: answered WHEN_IDLE,
 // each answer starts another generation); a rejected call keeps WHEN_IDLE
 // and gets the reason, so the model can fix it; get_board gets the digest.
 func Answer(doc *Doc, c *genai.FunctionCall) (Op, *genai.FunctionResponse, error) {

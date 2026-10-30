@@ -47,8 +47,10 @@ macOS voices score it: no board writes without the gate, wake precision and
 recall, latency, silence on draw commands, ordering, 60 minutes of
 continuity.
 
-**Integration.** Two Macs, two people: talk, ask for a diagram, both see the
-same board; ask a question and hear the answer; auto mode on and off; undo.
+**Integration (the user's gate passed on two Macs, 2026-10-29, on huddled's
+own SFU; `docs/gates.md`, "Stage 1").** Two Macs, two people: talk, ask for
+a diagram, both see the same board; ask a question and hear the answer; auto
+mode on and off; undo.
 
 ## Stage 2: camera and screen share
 
@@ -106,7 +108,7 @@ network and decoder.
 - **Gate:** renders with 1 to 7 people, a share, the minimum window, both
   themes, and upload costs measured.
 
-**Integration (agent checks passed 2026-10-28; the user's gate is in AGENTS.md, "The stage 2 gate").**
+**Integration (agent checks passed 2026-10-28; the user's gate passed 2026-10-29, on huddled's own SFU; `docs/gates.md`, "Stage 2").**
 - **Alone:** pattern bots for cameras and a share, plus the echo bot.
 - **Two Macs:** cameras both ways, a display and a window shared, the board
   drawing during a share, and a 1 Mbps link that drops the video a layer
@@ -263,7 +265,7 @@ went in step 5.
       smaller layer wanted again could pause a running larger one.
 - **Step 5, builtin the default, then LiveKit gone (done 2026-10-29):**
   - builtin became the default and every agent gate was rerun on it
-    (AGENTS.md, step 5a). Found on the way: the whiteboard could lose a
+    (`docs/history.md`, step 5a). Found on the way: the whiteboard could lose a
     command behind a question whose last turn-complete never came, and the
     jitter buffer told lip sync a stale position after a silence (a frame
     held 350 ms behind a narrow uplink). Both fixed.
@@ -275,11 +277,11 @@ went in step 5.
 
 ## Later stages
 
-1. Accounts and meetings: Verify sign-in, meetings, scheduling, invites, join
+3. Stage 3, accounts and meetings: Verify sign-in, meetings, scheduling, invites, join
    codes and a lobby, SMS invites (needs A2P 10DLC registration).
-2. Recording and replay: per-speaker audio to object storage, mixdown, one
+4. Stage 4, recording and replay: per-speaker audio to object storage, mixdown, one
    meeting clock, a replay screen, consent at join.
-3. Release: a notarized DMG on GitHub Releases, a version check, hardening.
+5. Stage 5, release: a notarized DMG on GitHub Releases, a version check, hardening.
 
 ## Facts the design rests on (checked 2026-10)
 

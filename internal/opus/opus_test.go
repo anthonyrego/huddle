@@ -193,7 +193,7 @@ func lostFrameCorrelation(ref, out []float32, lost []bool) float64 {
 	return pcm.Correlation(a, b, 0)
 }
 
-// TestConcealmentCompared is the FEC/PLC comparison AGENTS.md records:
+// TestConcealmentCompared is the FEC/PLC comparison docs/design.md records:
 // each backend's decode of the speech fixture under 5% and 10% random
 // loss, scored as correlation with the source (whole signal) and with the
 // clean decode (lost frames only). Run with -v to see the table.

@@ -58,8 +58,10 @@ type Events struct {
 	Left         func(identity string)
 	Levels       func([]Level)
 	Disconnected func(err error) // the room ended or the connection was lost for good
-	// Reconnecting and Reconnected bracket the SDK's own attempt to get a
-	// dropped connection back; Disconnected follows if it can't.
+	// Reconnecting and Reconnected bracket a transport's own attempt to get
+	// a dropped connection back; Disconnected follows if it can't. The room
+	// on huddled's SFU has no resume, so neither fires and Disconnected
+	// comes at once.
 	Reconnecting, Reconnected func()
 	// VideoAdded and VideoRemoved bring each remote camera and screen as
 	// it comes and goes.
